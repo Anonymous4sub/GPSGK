@@ -1,0 +1,13 @@
+__pycache__/
+log/
+log_dgp/
+.ipynb_checkpoints/
+model/
+out/
+gcgp/__pycache__/
+utils/__pycache__/
+data/
+.DS_Store
+.idea/
+nohup.out
+*.out
