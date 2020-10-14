@@ -300,7 +300,7 @@ if __name__ == "__main__":
     acc_val_list = []
     acc_test_list = []
 
-    for i in range(10):
+    for i in range(20):
 
         acc_val = evaluate(graph, placeholders, model, sess)
         acc_test = evaluate(graph, placeholders, model, sess, test=True)

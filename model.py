@@ -502,11 +502,12 @@ class RFDGP(object):
         
         return samples, support_sizes
 
+
 class SemiRFDGP(object):
 
     def __init__(self, placeholders, input_features, node_neighbors, dims, num_samples, latent_units, n_omega, 
                 trans_feature=False, feature_dim=512, sample_size=1, dropout=0.0, bias=False, 
-                act=tf.nn.relu, weight_decay=5e-4, lr=1e-3):
+                act=tf.nn.sigmoid, weight_decay=5e-4, lr=1e-3):
 
         self.batch = placeholders['nodes']
         self.Y = placeholders['Y']
@@ -537,7 +538,7 @@ class SemiRFDGP(object):
 
         outputs = self.layers(self.batch)
 
-        # ==================================== build loss =====================================
+        # ================================== build loss =====================================
 
         self.reconstruct_loss = masked_softmax_cross_entropy(outputs, self.Y, self.label_mask)
 

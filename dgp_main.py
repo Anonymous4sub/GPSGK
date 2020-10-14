@@ -29,12 +29,12 @@ flags.DEFINE_integer("batch_size", 256, "")
 flags.DEFINE_integer("val_batch_size", 256, "") 
 
 flags.DEFINE_bool("trans_feature", False, "")
-flags.DEFINE_integer("feature_dim", 512, "")
+flags.DEFINE_integer("feature_dim", 128, "")
 
-flags.DEFINE_string("hidden", "[64]", "hidden units of DGP")
+flags.DEFINE_string("hidden", "[16]", "hidden units of DGP")
 flags.DEFINE_string("n_neighbors", "[25, 10]", "")
-flags.DEFINE_string("infernet", "[[32, 32], [32]]", "")
-flags.DEFINE_integer("n_omega", 512, "")
+flags.DEFINE_string("infernet", "[[32], [32]]", "")
+flags.DEFINE_integer("n_omega", 256, "")
 
 flags.DEFINE_integer("sample_size", 1, "")
 flags.DEFINE_float("dropout", 0.5, "")  # 0.5 

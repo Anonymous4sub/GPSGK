@@ -299,6 +299,9 @@ class RFFAggregator(Layer):
         
         with tf.variable_scope("{}_inferencenet".format(name)):
             self.inference = InferenceNet(input_dim, input_dim, latent_units, dropout=self.dropout, act=self.act)
+        
+        # self.mu_omega = glorot([1, input_dim])
+        # self.logstd_omega = glorot([1, input_dim])
 
         self.eps = np.random.normal(0.0, 1.0, [self.sample_size, n_omega, input_dim]).astype(np.float32)
         self.b = np.random.uniform(0.0, 2*np.pi, [1, n_omega]).astype(np.float32)
