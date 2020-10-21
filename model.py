@@ -2,7 +2,7 @@
 import tensorflow as tf
 import numpy as np
 
-from layers import glorot, Layer, NeuralNet, InferenceNet, GCNAggregator, RFFAggregator
+from layers import glorot, Layer, NeuralNet, InferenceNet, GCNAggregator, RFFAggregator, Res_bolck
 
 
 
@@ -297,7 +297,171 @@ class StructAwareGP(object):
         return support_mean_features
 
 
-"""
+class StructAwareGP_Inductive(object):
+
+    def __init__(self, placeholders, input_features, feature_dim, n_samples, latent_layer_units, output_dim,
+                transform_feature=False, node_neighbors=None, linear_layer=False, lambda1=1.0, lambda2 = 1.0, sample_size=5,
+                dropout=0., bias=False, act=tf.nn.relu, weight_decay=0.0, lr=0.001, name="sagp", 
+                sigmoid_loss=False, n_neighbors=10, node_neighbors_neg=None, **kwargs):
+
+        super(StructAwareGP_Inductive, self).__init__(**kwargs)
+
+        self.batch = placeholders['nodes']
+        self.Y = placeholders['Y']
+        self.label_mask = placeholders['label_mask']
+        self.localSim = placeholders['localSim']
+        self.batch_size = placeholders["batch_size"]
+
+        self.input_dim = input_features.shape[1]
+        self.n_classes = placeholders['Y'].get_shape().as_list()[1]
+
+        self.input_features = input_features
+        self.n_samples = n_samples
+        self.latent_layer_units = latent_layer_units
+        self.output_dim = output_dim
+
+        self.transform_feature = transform_feature
+        self.linear_layer = linear_layer
+
+        self.lambda1 = lambda1
+        self.lambda2 = lambda2 
+        self.sample_size = sample_size
+        self.dropout = dropout
+        self.act = act 
+        self.weight_decay = weight_decay
+        self.lr = lr
+        self.sigmoid_loss = sigmoid_loss
+
+        # feature learning
+        with tf.variable_scope("feature_mapping"):
+
+            if self.transform_feature:
+                self.feature_dim = feature_dim
+                self.feature = GraphConvolution(self.input_features, node_neighbors, [self.feature_dim*2, self.feature_dim], [25, 20], self.batch_size,
+                                                dropout=self.dropout, act=self.act)(self.batch)
+            else:
+                self.feature_dim = self.input_dim
+                self.feature = Constant(self.input_dim)(tf.nn.embedding_lookup(self.input_features, self.batch))
+        
+
+        # random Fourier feature
+        with tf.variable_scope("ImplicitKernelNet"):
+
+            self.implicitkernelnet = InferenceNet(1, self.feature_dim, self.latent_layer_units, dropout=self.dropout, act=self.act)
+            
+            self.context_weight = glorot([self.n_samples, self.n_samples])
+            
+        self.epsilon = np.random.normal(0.0, 1.0, [self.n_samples, 1]).astype(np.float32)
+        self.eps = np.random.normal(0.0, 1.0, [self.sample_size, self.n_samples, self.feature_dim]).astype(np.float32)
+        self.b = np.random.uniform(0.0, 2*np.pi, [1, self.n_samples]).astype(np.float32)
+
+        # Bayesian linear regression
+        with tf.variable_scope("posterior"):
+            self.W_mu = glorot([self.output_dim, self.n_samples], name='out_weights_mu')
+            self.W_logstd = glorot([self.output_dim, self.n_samples], name='out_weights_logstd')
+
+            if self.linear_layer:
+                self.linear_W = glorot([self.output_dim, self.n_classes])
+            else:
+                self.linear_W = tf.eye(self.n_classes)
+        
+
+        self._build_graph()
+    
+
+    def _build_graph(self):
+
+
+        # obtain implicit random features
+        Omega_mu, Omega_logstd = self.implicitkernelnet(self.epsilon) # n_samples, feature_dim
+        Omega = Omega_mu + self.eps * tf.math.exp(Omega_logstd)  # sample_size, n_samples, feature_dim
+        self.Omega = tf.reduce_mean(Omega, axis=0)
+
+        transform = tf.matmul(self.feature, self.Omega, transpose_b=True) # N, n_samples
+        transform = np.sqrt(2. / self.n_samples) * tf.math.cos(2*np.pi*transform + self.b)
+        self.kernelfeatures = tf.cast(transform, tf.float32)
+
+
+        # obtain parameters of the linear mapping
+        u = np.random.normal(0.0, 1.0, [self.sample_size, self.n_classes, self.n_samples])
+        W = self.W_mu + u * tf.math.exp(self.W_logstd)
+        W = tf.reduce_mean(W, axis=0)
+
+        output = tf.matmul(self.kernelfeatures, W, transpose_b=True)
+
+        self.logits = tf.matmul(output, self.linear_W)
+        # self.logits = output
+
+        # ============================= construct loss =====================================
+        if not self.sigmoid_loss:
+            self.reconstruct_loss = masked_softmax_cross_entropy(self.logits, self.Y, self.label_mask)
+        else:
+            self.reconstruct_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits, labels=self.Y))
+
+        scale = 1. / tf.cast(tf.reduce_sum(self.label_mask), tf.float32)
+        self.kl = scale * self.obtain_prior_KL()
+
+
+        context = tf.matmul(self.kernelfeatures, self.context_weight)
+        sim_contex = tf.matmul(self.kernelfeatures, context, transpose_b=True)
+        mask_not_neighbor = tf.equal(self.localSim, 0.0)
+        pos_neighbor = tf.nn.dropout(tf.boolean_mask(sim_contex, tf.math.logical_not(mask_not_neighbor)), keep_prob=0.5)
+        neg_neighbor = tf.nn.dropout(tf.boolean_mask(sim_contex, mask_not_neighbor), keep_prob=0.5)
+        sim_neighbor = -1 * tf.reduce_mean(tf.math.log(1e-6 + tf.nn.sigmoid(pos_neighbor))) - tf.reduce_mean(tf.math.log(1e-6 + tf.nn.sigmoid(-1 * neg_neighbor)))
+
+        # self.sim = self.lambda1 * sim_label + self.lambda2 * sim_neighbor
+        self.sim = self.lambda2 * sim_neighbor
+
+        fm_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="feature_mapping")
+        kn_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="ImplicitKernelNet")
+        ps_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="posterior")
+        tf_vars = fm_vars + kn_vars
+
+        l2_loss = 0
+        for var in tf_vars:
+            l2_loss += tf.nn.l2_loss(var)
+        self.l2_loss = self.weight_decay * l2_loss
+
+        # ====================================================================================
+
+        # self.loss = self.reconstruct_loss + self.kl - self.sim + self.l2_loss
+        self.loss = self.reconstruct_loss + self.kl + self.sim + self.l2_loss
+        # self.loss = self.reconstruct_loss + self.kl + self.l2_loss
+
+        # ============================== iterative updating ==================================
+
+        self.loss_e = self.reconstruct_loss + self.kl + self.l2_loss
+        self.loss_m = self.reconstruct_loss + self.sim + self.l2_loss
+
+
+        self.optimizer_e = tf.train.AdamOptimizer(self.lr)
+        grads_and_vars_e = self.optimizer_e.compute_gradients(self.loss_e, var_list= fm_vars+ ps_vars)
+        clipped_grads_and_vars_e = [(tf.clip_by_value(grad, -5.0, 5.0) if grad is not None else None, var) 
+                                    for grad, var in grads_and_vars_e]
+        self.opt_step_e = self.optimizer_e.apply_gradients(clipped_grads_and_vars_e)
+
+        self.optimizer_m = tf.train.AdamOptimizer(self.lr)
+        grads_and_vars_m = self.optimizer_m.compute_gradients(self.loss_m, var_list= fm_vars + kn_vars)
+        clipped_grads_and_vars_m = [(tf.clip_by_value(grad, -5.0, 5.0) if grad is not None else None, var) 
+                                    for grad, var in grads_and_vars_m]
+        self.opt_step_m = self.optimizer_m.apply_gradients(clipped_grads_and_vars_m)
+
+        #=====================================================================================
+        
+        # accuracy
+        if not self.sigmoid_loss:
+            self.accuracy = masked_accuracy(self.logits, self.Y, self.label_mask)
+
+
+    def obtain_prior_KL(self):
+        # return KL divergence of W
+
+        return 0.5 * tf.reduce_mean(tf.reduce_sum(tf.math.square(self.W_mu) + tf.math.square(tf.math.exp(self.W_logstd)) \
+                                    - 2*self.W_logstd - 1, axis=1))
+
+
+
+
 class GCN(object):
 
     def __init__(self, placeholders, dropout=0.0, act=tf.nn.relu, weight_decay=0.0):
@@ -329,7 +493,8 @@ class GCN(object):
         self.opt_step = tf.train.AdamOptimizer(0.01).minimize(self.loss)
 
         self.accuracy = masked_accuracy(logits, self.label, self.label_mask)
-"""
+
+
 
 class GraphConvolution(object):
 
@@ -415,6 +580,7 @@ class GraphConvolution(object):
 
 
 
+
 class RFDGP(object):
 
     def __init__(self, input_features, node_neighbors, dims, num_samples, batch_size, 
@@ -446,7 +612,7 @@ class RFDGP(object):
         for in_dim, out_dim in zip(self.dims[:-1], self.dims[1:]):
             # self.aggregators.append(GCNAggregator(in_dim, out_dim, dropout=self.dropout, bias=False, act=self.act))
             self.aggregators.append(RFFAggregator(in_dim, out_dim, latent_units[i], n_omega, self.dropout, act=self.act, 
-                                    sample_size=sample_size, name="layer{}".format(i)))
+                                    sample_size=sample_size, res_connection=False, name="layer{}".format(i)))
             i += 1
 
 
@@ -466,6 +632,7 @@ class RFDGP(object):
                                     self.dims[layer]]
                 h = aggregator((hidden[hop], tf.reshape(hidden[hop+1], neighbor_dims)))
                 # h = tf.layers.batch_normalization(h)
+                # h = h + res_block(hidden[hop])
                 next_hidden.append(h)
             
             hidden = next_hidden
@@ -503,11 +670,13 @@ class RFDGP(object):
         return samples, support_sizes
 
 
+
+
 class SemiRFDGP(object):
 
     def __init__(self, placeholders, input_features, node_neighbors, dims, num_samples, latent_units, n_omega, 
-                trans_feature=False, feature_dim=512, sample_size=1, dropout=0.0, bias=False, 
-                act=tf.nn.sigmoid, weight_decay=5e-4, lr=1e-3):
+                trans_feature=False, feature_dim=[512], sample_size=1, dropout=0.0, bias=False, 
+                act=tf.nn.relu, weight_decay=5e-4, lamb=1.0, lr=1e-3):
 
         self.batch = placeholders['nodes']
         self.Y = placeholders['Y']
@@ -519,11 +688,13 @@ class SemiRFDGP(object):
 
         self.num_samples = num_samples
         self.weight_decay = weight_decay
+        self.lamb = lamb
         self.lr = lr
 
         with tf.variable_scope("trans_feature"):    
             if trans_feature:
-                feature = NeuralNet(self.input_dim, [feature_dim], dropout=dropout, act=act)(input_features)
+                feature = NeuralNet(self.input_dim, feature_dim, dropout=dropout, act=act)(input_features)
+                # feature = GraphConvolution(input_features, node_neighbors, feature_dim, [25, 10], self.batch_size, dropout=dropout, act=tf.nn.relu)(self.batch)
             else:
                 feature = tf.identity(input_features)
         
@@ -531,12 +702,18 @@ class SemiRFDGP(object):
             self.layers = RFDGP(feature, node_neighbors, dims, num_samples, self.batch_size, latent_units,
                                 n_omega, sample_size=sample_size, dropout=dropout, act=act)
         
+        """
+        with tf.variable_scope("softmax"):
+            self.softmax_weight = glorot([dims[-1], self.n_classes])
+        """
+
         self._build()
     
     
     def _build(self):
 
         outputs = self.layers(self.batch)
+        # outputs = tf.matmul(outputs, self.softmax_weight)
 
         # ================================== build loss =====================================
 
@@ -547,15 +724,24 @@ class SemiRFDGP(object):
 
         for layer in self.layers.aggregators:
             kl += layer.obtain_KL_prior()
-        self.kl = scale * kl
+        self.kl = scale * kl * self.lamb
 
         # l2_loss = tf.nn.l2_loss(self.feature_layer.get_vars()[0])
         transf_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="trans_feature")
-        dgp_vars = []
-        for i in range(len(self.num_samples)):
-            dgp_vars += tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="DGPlayers/layer{}_inferencenet".format(i))
-        tf_vars = transf_vars + dgp_vars
 
+        dgp_infernet_vars = []
+        dgp_w_vars = []
+        dgp_res_vars = []
+        for i in range(len(self.num_samples)):
+            dgp_infernet_vars += tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="DGPlayers/layer{}_inferencenet".format(i))
+            dgp_w_vars += tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="DGPlayers/layer{}_W".format(i))
+            dgp_res_vars += tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="DGPlayers/layer{}_res_block".format(i))
+        
+        # softmax_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="softmax")
+
+        # tf_vars = transf_vars + dgp_infernet_vars + softmax_vars
+        tf_vars = transf_vars + dgp_infernet_vars + dgp_res_vars
+        
         l2_loss = 0.0
         for var in tf_vars:
             l2_loss += tf.nn.l2_loss(var)
@@ -564,6 +750,10 @@ class SemiRFDGP(object):
         self.loss = self.reconstruct_loss + self.kl + self.l2_loss
 
         # ====================================================================================
+
+        self.pt_optimizer = tf.train.AdamOptimizer(self.lr)
+        pt_grads_and_vars = self.pt_optimizer.compute_gradients(self.loss, var_list= transf_vars + dgp_w_vars)
+        self.opt_step_pt = self.pt_optimizer.apply_gradients(pt_grads_and_vars)
 
         self.optimizer = tf.train.AdamOptimizer(self.lr)
         grads_and_vars = self.optimizer.compute_gradients(self.loss)

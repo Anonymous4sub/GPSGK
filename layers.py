@@ -287,7 +287,7 @@ class GCNAggregator(Layer):
 
 class RFFAggregator(Layer):
 
-    def __init__(self, input_dim, output_dim, latent_units, n_omega, dropout=0.5, act=tf.nn.relu, sample_size=1, name=None, concat=False, **kwargs):
+    def __init__(self, input_dim, output_dim, latent_units, n_omega, dropout=0.5, act=tf.nn.relu, sample_size=1, name=None, concat=False, res_connection=False, **kwargs):
             
         super(RFFAggregator, self).__init__(**kwargs)
 
@@ -295,6 +295,7 @@ class RFFAggregator(Layer):
         self.dropout = dropout
         self.act = act
         self.sample_size = sample_size
+        self.res_connection = res_connection
         self.concat = concat
         
         with tf.variable_scope("{}_inferencenet".format(name)):
@@ -302,12 +303,18 @@ class RFFAggregator(Layer):
         
         # self.mu_omega = glorot([1, input_dim])
         # self.logstd_omega = glorot([1, input_dim])
-
+        # self.kernel_params = glorot([input_dim, n_omega])
         self.eps = np.random.normal(0.0, 1.0, [self.sample_size, n_omega, input_dim]).astype(np.float32)
         self.b = np.random.uniform(0.0, 2*np.pi, [1, n_omega]).astype(np.float32)
 
-        self.W_mu = glorot([n_omega, output_dim])
-        self.W_logstd = glorot([n_omega, output_dim])
+        with tf.variable_scope("{}_W".format(name)):
+            self.W_mu = glorot([n_omega, output_dim])
+            self.W_logstd = glorot([n_omega, output_dim])
+        
+        with tf.variable_scope("{}_res_block".format(name)):
+            if res_connection:
+                self.res_block = Res_bolck(input_dim, [32, output_dim], dropout=self.dropout, act=self.act)
+            
         self.u = np.random.normal(0.0, 1.0, [self.sample_size, n_omega, output_dim]).astype(np.float32)
     
 
@@ -317,20 +324,29 @@ class RFFAggregator(Layer):
         neigh_vecs = tf.nn.dropout(neigh_vecs, keep_prob = 1-self.dropout)
         self_vecs = tf.nn.dropout(self_vecs, keep_prob = 1-self.dropout)
 
-        self_vecs = tf.expand_dims(self_vecs, axis=1)
-        all_vecs = tf.concat([neigh_vecs, self_vecs], axis=1) # [n_self_vecs, n_neighbors+1, input_dim]
+        self_vecs = tf.expand_dims(self_vecs, axis=1)  # [batch_size, 1, input_dim]
+        all_vecs = tf.concat([neigh_vecs, self_vecs], axis=1) # [batch_size, n_neighbors+1, input_dim]
         all_means = tf.expand_dims(tf.reduce_mean(all_vecs, axis=[0, 1]), axis=0)  # [1, input_dim]
 
         self.mu_omega, self.logstd_omega = self.inference(all_means)  # [1, input_dim]
+        
         omega = self.mu_omega + self.eps * tf.math.exp(self.logstd_omega)  # [sample_size, n_omega, input_dim]
         omega = tf.reduce_mean(omega, axis=0)  # [n_omega, input_dim]
 
         transform = tf.matmul(all_vecs, omega, transpose_b=True)
         transform = np.sqrt(2. / self.n_omega) * tf.math.cos(2*np.pi*transform + self.b)
         kernelfeatures = tf.cast(transform, tf.float32)
+        
+        #kernelfeatures = tf.matmul(all_vecs, self.kernel_params)
 
         W = tf.reduce_mean(self.W_mu + self.u * tf.math.exp(self.W_logstd), axis=0)
-        output = tf.reduce_mean(tf.matmul(kernelfeatures, W), axis=1)  
+        output = tf.matmul(kernelfeatures, W)  # [batch_size, n_neighbors+1, output_dim]
+
+        if self.res_connection:
+            output = output + self.res_block(self_vecs)
+
+        output = tf.layers.batch_normalization(output)
+        output = tf.reduce_mean(output, axis=1)  
 
         return output
 
@@ -342,3 +358,31 @@ class RFFAggregator(Layer):
         kl_W = 0.5 * tf.reduce_mean(tf.reduce_sum(tf.math.square(self.W_mu) + tf.math.square(tf.math.exp(self.W_logstd)) \
                                     - 2*self.W_logstd - 1, axis=1))
         return kl_omega + kl_W
+
+
+class Res_bolck(Layer):
+
+    def __init__(self, input_dim, latent_layers_dim, dropout=0.5, act=tf.nn.relu, name=None, **kwargs):
+
+        super(Res_bolck, self).__init__(**kwargs)
+
+        self.act = act 
+        self.all_layers_dim = [input_dim]
+        self.all_layers_dim.extend(latent_layers_dim)
+
+        self.hidden_layers = []
+        for in_dim, out_dim in zip(self.all_layers_dim[:-1], self.all_layers_dim[1:]):
+            self.hidden_layers.append(Dense(in_dim, out_dim, dropout=dropout, act=lambda x: x, bias=False))
+
+    def _call(self, inputs):
+
+        x = inputs
+        for layer in self.hidden_layers[:-1]:
+            x = layer(x)
+            x = tf.layers.batch_normalization(x)
+            x = self.act(x)
+        
+        x = self.hidden_layers[-1](x)
+        x = tf.layers.batch_normalization(x)
+
+        return x

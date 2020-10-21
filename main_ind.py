@@ -7,11 +7,12 @@ import os
 import shutil
 
 import numpy as np
+from sklearn import metrics
 import tensorflow as tf
 
-from Datasets import Graph
-from model import StructAwareGP
-
+from utils.load_data import load_inductive_data
+from Datasets import InductiveGraph
+from model import StructAwareGP_Inductive
 """
 seed = 2020
 np.random.seed(seed)
@@ -22,28 +23,29 @@ tf.set_random_seed(seed)
 flags = tf.app.flags
 FLAGS = flags.FLAGS
 flags.DEFINE_string('data_path', 'data', 'path of datasets')
-flags.DEFINE_string('dataset', 'cora', 'Dataset string.')  # 'cora', 'citeseer', 'pubmed'
+flags.DEFINE_string('dataset', 'ppi', 'Dataset string.')  # 'cora', 'citeseer', 'pubmed'
 flags.DEFINE_string("label_ratio", "None", "ratio of labelled data, default split when label_ratio is None")
+flags.DEFINE_bool("sigmoid", True, " ")
 
 flags.DEFINE_integer("n_hop", 1, "") # Cora: 1
 flags.DEFINE_integer("max_degree", 128, "")
 flags.DEFINE_integer("path_length", 1, "") # 1
 flags.DEFINE_float("path_dropout", 0.2, " ")  # 0.2
 
-flags.DEFINE_integer("feature_dim", 64, "dimension of transformed feature") # cora: 64, citeseer:64; pubmed:64
-flags.DEFINE_integer("n_samples", 780, "number of samples of omega") # cora: 780; citeseer:1000; pubmed:1000; photo:1000; computers:1000
-flags.DEFINE_string("latent_layer_units", "[64, 64]", "") # cora: [64, 64]; citeseer:[64, 64]; pubmed:[64, 64]
-flags.DEFINE_float("lambda1", 0.001, " ")
-flags.DEFINE_float("lambda2", 1e-4, " ")  # cora: 1e-4; citeseer:1e-4; pubmed:1e-4;
+flags.DEFINE_integer("feature_dim", 128, "dimension of transformed feature") # cora: 64, citeseer:64
+flags.DEFINE_integer("n_samples", 780, "number of samples of omega") # cora: 780; citeseer:1000; pubmed:1000
+flags.DEFINE_string("latent_layer_units", "[64, 64]", "") # cora: [64, 64]; citeseer:[64, 64]
+flags.DEFINE_float("lambda1", 0.001, " ")  # cora: 0.001; citeseer:0.001
+flags.DEFINE_float("lambda2", 1e-4, " ")  # cora: 1e-4; citeseer:1e-4
 
-flags.DEFINE_integer("batch_size", 512, "")
-flags.DEFINE_integer("val_batch_size", 256, "")
-flags.DEFINE_integer("steps", 1000, "steps of optimization")
-flags.DEFINE_integer("pretrain_step", 100, " ") # cora: 100; citeseer:100; pubmed:100; photo:500; computers:500
-flags.DEFINE_float("dropout", 0.5, "")  
-flags.DEFINE_float("weight_decay", 5e-4, "")
-flags.DEFINE_float("lr", 0.0005, "learning rate") # cora: 0.0005; citeseer:0.0005; pubmed:0.0005; photo:0.001; computers:0.001
-flags.DEFINE_float("tau", 0.5, "") # cora: 0.5; citeseer:0.6, pubmed:0.9; photo:0.5; computers:0.5
+flags.DEFINE_integer("batch_size", 512, "") # cora: 512; citeseer:512
+flags.DEFINE_integer("val_batch_size", 256, "") # cora: 256; citeseer:256
+flags.DEFINE_integer("steps", 1000, "steps of optimization") # cora: 1000
+flags.DEFINE_integer("pretrain_step", 2000, " ") # cora: 100; citeseer:100
+flags.DEFINE_float("dropout", 0.5, "")  # 0.5 
+flags.DEFINE_float("weight_decay", 5e-4, "") # cora: 5e-4; citeseer:5e-4
+flags.DEFINE_float("lr", 0.01, "learning rate") # cora: 0.0005; citeseer:0.0005
+flags.DEFINE_float("tau", 0.5, "") # cora: 0.5; citeseer:0.6, pubmed:0.9
 
 flags.DEFINE_integer("early_stopping", 20, " ")
 flags.DEFINE_string("transform", "True", "")
@@ -96,128 +98,95 @@ def load_data():
 
     return graph
 
+def calc_f1(y_true, y_pred):
 
-def calculate_accuracy(logits, labels):
-
-    return np.sum(np.argmax(logits, axis=1) == np.argmax(labels, axis=1)) * 100. / len(labels)
-
-def get_psudo_label(logits, label_true, label_mask, tau=0.0):
-
-    label = np.argmax(logits, axis=1)
-    psudo_label = np.zeros_like(label_true)
-    psudo_label[np.arange(label.size), label] = 1. 
-    psudo_label[label_mask] = label_true[label_mask]
-    
-    if tau == 0.0:
-        mask = np.ones(label.size, dtype=np.bool)
+    if not FLAGS.sigmoid:
+        y_true = np.argmax(y_true, axis=1)
+        y_pred = np.argmax(y_pred, axis=1)
     else:
-        preds = np.exp(logits) / np.sum(np.exp(logits), axis=1, keepdims=True)
-        label_prob = np.max(preds, axis=1)
-        mask = (label_prob >= tau)
-        mask[label_mask] = True
+        y_pred[y_pred > 0.5] = 1
+        y_pred[y_pred <= 0.5] = 0
+    return metrics.f1_score(y_true, y_pred, average="micro"), metrics.f1_score(y_true, y_pred, average="macro")
 
 
-    return psudo_label, mask
+def incremental_evaluate(sess, model, minibatch_iter, size, test=False):
 
+    t_test = time.time()
+    finished = False
+    val_losses = []
+    val_preds = []
+    labels = []
+    iter_num = 0
+    finished = False
 
-def evaluate(graph, placeholders, model, sess, test=False):
+    while not finished:
 
-    feed_dict_val = graph.val_batch_feed_dict(placeholders, FLAGS.val_batch_size, test=test)
-    acc_val = []
+        feed_dict_val, batch_labels, finished, _  = minibatch_iter.incremental_node_val_feed_dict(size, iter_num, test=test)
+        feed_dict_val.update({minibatch_iter.placeholders["node_neighbors"]: minibatch_iter.test_adj})
+        node_outs_val = sess.run([model.logits], feed_dict=feed_dict_val)
+        val_preds.append(node_outs_val[0])
+        labels.append(batch_labels)
+        iter_num += 1
 
-    while feed_dict_val is not None:
-        accuracy_val = sess.run([model.accuracy], feed_dict=feed_dict_val)
-        acc_val.append(accuracy_val[0])
-        feed_dict_val = graph.val_batch_feed_dict(placeholders, FLAGS.val_batch_size)
-    
-    return np.mean(acc_val)
-
-def pretrain_kernel(graph, placeholders, model, sess):
-
-    model.set_lambda(0.1, 0.01)
-    for i in range(FLAGS.pretrain_step):
-        train_feed_dict = graph.next_batch_feed_dict(placeholders)
-        _, loss_e, acc_train = sess.run([model.opt_step_kernel, model.sim, model.accuracy], feed_dict=train_feed_dict)
-        print("pretrain step {}: loss_e: {:.6f}, accuracy: {:.5f}".format(i, loss_e, acc_train))
-    
-    model.set_lambda(FLAGS.lambda1, FLAGS.lambda2)
+    val_preds = np.vstack(val_preds)
+    labels = np.vstack(labels)
+    f1_scores = calc_f1(labels, val_preds)
+    return f1_scores[0], f1_scores[1]
 
 
 def pretrain(graph, placeholders, model, sess):
 
-    if FLAGS.dataset in ["cora", "citeseer", "pubmed"] and FLAGS.label_ratio is not None:
-        batch_dict = graph.next_batch_feed_dict
-    else:
-        batch_dict = graph.next_batch_feed_dict_v2
+    graph.shuffle()
 
     for i in range(FLAGS.pretrain_step):
-        train_feed_dict = batch_dict(placeholders)
-        _, loss_e, acc_train = sess.run([model.opt_step_e, model.loss_e, model.accuracy], feed_dict=train_feed_dict)
-        print("pretrain step {}: loss_e: {:.6f}, accuracy: {:.5f}".format(i, loss_e, acc_train))
+
+        if graph.end():
+            graph.shuffle()
+        
+        train_feed_dict = graph.next_train_feed_dict()
+        # train_feed_dict = graph.next_batch_feed_dict(placeholders)
+        _, loss_e, preds = sess.run([model.opt_step_e, model.loss_e, model.logits], feed_dict=train_feed_dict)
+        micro, macro = calc_f1(train_feed_dict[placeholders["Y"]], preds)
+        print("pretrain step {}: loss_e: {:.6f}, micro: {:.6f}, macro: {:.6f}".format(i, loss_e, micro, macro))
 
 
 def train_iterative(graph, placeholders, model, sess, saver, model_path):
 
-    # construct feed_dict
-    # feed_dict_val = graph.val_batch_feed_dict(placeholders)
-    # feed_dict_test = graph.val_batch_feed_dict(placeholders, test=True)
-
-    # cost_val = []
     max_acc_val = 0.0
-
-    if FLAGS.dataset in ["cora", "citeseer", "pubmed"] and FLAGS.label_ratio is not None:
-        batch_dict = graph.next_batch_feed_dict
-    else:
-        batch_dict = graph.next_batch_feed_dict_v2
+    graph.shuffle()
 
     for i in range(FLAGS.steps):
+
+        if graph.end():
+            graph.shuffle()
         
-        train_feed_dict = batch_dict(placeholders)
+        train_feed_dict = graph.next_train_feed_dict()
     
         sess.run(model.opt_step_e, feed_dict = train_feed_dict)
 
-        logits = sess.run(model.logits, feed_dict=train_feed_dict)
-        psudo_label, mask = get_psudo_label(logits, train_feed_dict[placeholders["Y"]], train_feed_dict[placeholders["label_mask"]], FLAGS.tau)
-        train_feed_dict[placeholders["Y"]] = psudo_label
-        train_feed_dict[placeholders["label_mask"]] = mask
-
         sess.run(model.opt_step_m, feed_dict = train_feed_dict)
 
-        loss_train, re_loss, kl, sim, acc_train_value = sess.run([model.loss, model.reconstruct_loss, 
-                                        model.kl, model.sim, model.accuracy], feed_dict=train_feed_dict)
+        loss_train, re_loss, kl, sim, preds = sess.run([model.loss, model.reconstruct_loss, 
+                                        model.kl, model.sim, model.logits], feed_dict=train_feed_dict)
 
         if i % 5 == 0 or i == FLAGS.steps - 1:
 
             print("Epoch: {}".format(i+1), "loss: {:.5f}".format(loss_train), "llh_loss: {:.5f}".format(re_loss),
-              "kl: {:.5f}".format(kl), "sim: {:.5f}".format(sim), "accuracy: {:.5f}".format(acc_train_value), end=", ")
+              "kl: {:.5f}".format(kl), "sim: {:.5f}".format(sim), end=", ")
 
-            """
-            feed_dict_val = graph.val_batch_feed_dict(placeholders, FLAGS.val_batch_size)
-            acc_val = []
-            while feed_dict_val is not None:
-                accuracy_val = sess.run([model.accuracy], feed_dict=feed_dict_val)
-                acc_val.append(accuracy_val[0])
-                feed_dict_val = graph.val_batch_feed_dict(placeholders, FLAGS.val_batch_size)
-            # print(acc_val)
-            """
-            acc_val = evaluate(graph, placeholders, model, sess)
-            print("Accuracy_val: {:.5f}".format(acc_val), end=", ")
+            micro, macro = calc_f1(train_feed_dict[placeholders["Y"]], preds)
+            print("Train: (micro: {:.6f})".format(micro), end=", ")
+            
+            metric_val = incremental_evaluate(sess, model, graph, FLAGS.val_batch_size, test=False)
+            print("Val: (micro: {:.5f})".format(metric_val[0]), end=", ")
 
-            """
-            feed_dict_test = graph.val_batch_feed_dict(placeholders, FLAGS.val_batch_size, test=True)
-            acc_test = []
-            while feed_dict_test is not None:
-                accuracy_test = sess.run([model.accuracy], feed_dict=feed_dict_test)
-                acc_test.append(accuracy_test[0])
-                feed_dict_test = graph.val_batch_feed_dict(placeholders, FLAGS.val_batch_size, test=True)
-            # print(acc_test)
-            """
-            acc_test = evaluate(graph, placeholders, model, sess, test=True)
-            print("Accuracy_test: {:.5f}".format(acc_test))
-            if acc_test > max_acc_val:
+            metric_test = incremental_evaluate(sess, model, graph, FLAGS.val_batch_size, test=True)
+            print("Test: (micro: {:.5f})".format(metric_test[0]))
+
+            if metric_test[0] > max_acc_val:
                 save_path = saver.save(sess, "{}/model_best.ckpt".format(model_path), global_step=i)
                 print("=================successfully save the model at: {}=======================".format(save_path))
-                max_acc_val = acc_test
+                max_acc_val = metric_test[1]
         
 
 
@@ -263,28 +232,32 @@ if __name__ == "__main__":
     log_parameter_settings()  # log parameter settings
 
     # load data
-    graph = load_data()
-    # batch_size = graph.batch_size
+    data = load_inductive_data("{}/{}/{}".format(FLAGS.data_path, FLAGS.dataset, FLAGS.dataset))
+    n_classes = len(list(data[3].values())[0])
 
     # set placeholder
     placeholders = {
         'nodes': tf.placeholder(dtype=tf.int32, shape=[None]),
-        'Y': tf.placeholder(dtype=tf.float32, shape=[None, graph.n_classes]),
+        'Y': tf.placeholder(dtype=tf.float32, shape=[None, n_classes]),
         'label_mask': tf.placeholder(dtype=tf.int32, shape=[None]),
         'localSim': tf.placeholder(dtype=tf.float32, shape=[None, None]), 
-        #'globalSim': tf.placeholder(dtype=tf.float32, shape=[None, None]),
-        "batch_size": tf.placeholder(tf.int32, name='batch_size')
+        "batch_size": tf.placeholder(tf.int32, name='batch_size'),
+        "node_neighbors": tf.placeholder(tf.int32, shape=[None, FLAGS.max_degree], name="node_neighbors")
     }
+
+    graph = InductiveGraph(data, n_classes, placeholders, FLAGS.max_degree, FLAGS.batch_size, normalize=True)
     
+    # print(graph.next_train_feed_dict())
+    
+    output_dim = graph.num_classes if not linear_layer else FLAGS.output_dim
 
-    output_dim = graph.n_classes if not linear_layer else FLAGS.output_dim
-
-    model = StructAwareGP(placeholders, graph.feature, FLAGS.feature_dim, FLAGS.n_samples, latent_layer_units, output_dim, 
-                        transform_feature=transform, node_neighbors=graph.node_neighbors, linear_layer=linear_layer, 
+    model = StructAwareGP_Inductive(placeholders, graph.feature, FLAGS.feature_dim, FLAGS.n_samples, latent_layer_units, output_dim, 
+                        transform_feature=transform, node_neighbors=placeholders["node_neighbors"], linear_layer=linear_layer, 
                         lambda1=FLAGS.lambda1, lambda2 = FLAGS.lambda2, dropout=FLAGS.dropout, bias=True, 
-                        act=tf.nn.relu, weight_decay=FLAGS.weight_decay, lr=FLAGS.lr)
+                        act=tf.nn.relu, weight_decay=FLAGS.weight_decay, lr=FLAGS.lr, sigmoid_loss=FLAGS.sigmoid)
     print("successfully initialized the model")
 
+    
     saver = tf.train.Saver(max_to_keep=3)
     # initialize session
     sess = tf.Session()
@@ -299,8 +272,9 @@ if __name__ == "__main__":
     # train(graph, placeholders, model, sess)
     # pretrain_kernel(graph, placeholders, model, sess)
     pretrain(graph, placeholders, model, sess)
+    
     train_iterative(graph, placeholders, model, sess, saver, model_path)
-
+    """
     # evaluate the model
     ckpt = tf.train.get_checkpoint_state(model_path)
     saver.restore(sess, ckpt.all_model_checkpoint_paths[-1])
@@ -323,5 +297,5 @@ if __name__ == "__main__":
     print("Accuracy_val: {:.5f}".format(np.max(acc_val_list)), end=", ")
     print("Accuracy_test: {:.5f}".format(np.max(acc_test_list)))
     print("===============================================")
-
+    """
     

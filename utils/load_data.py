@@ -1,11 +1,15 @@
 import numpy as np
 import pickle as pkl
-import networkx as nx
 import scipy.sparse as sp
 from collections import defaultdict
 from scipy.sparse.linalg.eigen.arpack import eigsh
 import sys
+import random
+import json
+import os
 
+import networkx as nx
+from networkx.readwrite import json_graph
 
 def parse_index_file(filename):
     """Parse index file."""
@@ -324,3 +328,190 @@ def load_AN(dataset, path, ratio=20):
     y_train, y_val, y_test, train_mask, val_mask, test_mask = read_label(label_file.readlines(), n_train=ratio)
 
     return adj, attribute, y_train, y_val, y_test, train_mask, val_mask, test_mask, graph
+
+
+
+
+def load_inductive_data(prefix, normalize=True, load_walks=False):
+    
+    G_data = json.load(open(prefix + "-G.json")) # dict
+    
+    G = json_graph.node_link_graph(G_data)
+    
+    if os.path.exists(prefix + "-feats.npy"):
+        feats = np.load(prefix + "-feats.npy")
+    else:
+        print("No features present.. Only identity features will be used.")
+        feats = None
+
+    id_map = json.load(open(prefix + "-id_map.json"))
+    id_map = {int(k):v for k, v in id_map.items()}
+    
+    # walks = []
+    class_map = json.load(open(prefix + "-class_map.json"))
+    class_map = {int(k):v for k, v in class_map.items()}
+
+    ## Remove all nodes that do not have val/test annotations
+    ## (necessary because of networkx weirdness with the Reddit data)
+    broken_count = 0
+    for node in G.nodes():
+        if not 'val' in G.nodes[node] or not 'test' in G.nodes[node]:
+            G.remove_node(node)
+            broken_count += 1
+    print("Removed {:d} nodes that lacked proper annotations due to networkx versioning issues".format(broken_count))
+
+    ## Make sure the graph has edge train_removed annotations
+    ## (some datasets might already have this..)
+    print("Loaded data.. now preprocessing..")
+    for edge in G.edges():
+        if (G.nodes[edge[0]]['val'] or G.nodes[edge[1]]['val'] or
+            G.nodes[edge[0]]['test'] or G.nodes[edge[1]]['test']):
+            G[edge[0]][edge[1]]['train_removed'] = True
+        else:
+            G[edge[0]][edge[1]]['train_removed'] = False
+
+    if normalize and not feats is None:
+        from sklearn.preprocessing import StandardScaler
+        train_ids = np.array([id_map[n] for n in G.nodes() if not G.nodes[n]['val'] and not G.nodes[n]['test']])
+        train_feats = feats[train_ids]
+        scaler = StandardScaler()
+        scaler.fit(train_feats)
+        feats = scaler.transform(feats)
+        
+    """
+    if load_walks:
+        with open(prefix + "-walks.txt") as fp:
+            for line in fp:
+                walks.append(map(conversion, line.split()))
+    """
+
+    return G, feats, id_map, class_map
+
+
+def load_npz_to_sparse_graph(file_name):
+    """Load a SparseGraph from a Numpy binary file.
+    Parameters
+    ----------
+    file_name : str
+        Name of the file to load.
+    Returns
+    -------
+    sparse_graph : SparseGraph
+        Graph in sparse matrix format.
+    """
+    with np.load(file_name) as loader:
+        loader = dict(loader)
+        adj_matrix = sp.csr_matrix((loader['adj_data'], loader['adj_indices'], loader['adj_indptr']),
+                                   shape=loader['adj_shape'])
+
+        if 'attr_data' in loader:
+            # Attributes are stored as a sparse CSR matrix
+            attr_matrix = sp.csr_matrix((loader['attr_data'], loader['attr_indices'], loader['attr_indptr']),
+                                        shape=loader['attr_shape'])
+        elif 'attr_matrix' in loader:
+            # Attributes are stored as a (dense) np.ndarray
+            attr_matrix = loader['attr_matrix']
+        else:
+            attr_matrix = None
+
+        if 'labels_data' in loader:
+            # Labels are stored as a CSR matrix
+            labels = sp.csr_matrix((loader['labels_data'], loader['labels_indices'], loader['labels_indptr']),
+                                   shape=loader['labels_shape'])
+        elif 'labels' in loader:
+            # Labels are stored as a numpy array
+            labels = loader['labels']
+        else:
+            labels = None
+
+    return adj_matrix, attr_matrix, labels
+
+
+def split_data_label(labels, train_ratio):
+    
+    num_nodes = len(labels)
+    num_label = len(np.unique(labels))
+
+    label_dict = defaultdict(list)  # used for train, val, test split
+    for i, l in enumerate(labels):
+        label_dict[l].append(i)
+
+    all_label = np.zeros((num_nodes, num_label), dtype=np.float32)
+    for i in range(num_nodes):
+        all_label[i, labels[i]] = 1.
+
+    # number of each class in test set
+    num_train = int(np.round(num_nodes * train_ratio))
+    num_val = int(np.round(num_nodes * 0.1))
+    num_test = num_nodes - num_train - num_val
+
+    num_train_dict = {}
+    num_val_dict = {}
+    num_test_dict = {}
+
+    for k, v in label_dict.items():
+
+        label_ratio = len(v) / num_nodes
+        num_train_dict[k] = int(np.round(num_train * label_ratio, 0))
+        num_val_dict[k] = int(np.round(num_val * label_ratio, 0))
+        num_test_dict[k] = int(np.round(num_test * label_ratio, 0))
+
+    idx_train = []
+    idx_val = []
+    idx_test = []
+
+    for l in range(num_label):
+        node_index = np.random.permutation(label_dict[l])
+        idx_train.extend(node_index[:num_train_dict[l]])
+        idx_val.extend(node_index[num_train_dict[l]:num_train_dict[l]+num_val_dict[l]])
+        idx_test.extend(node_index[-num_test_dict[l]:])
+
+    idx_train = np.sort(idx_train)
+    idx_val = np.sort(idx_val)
+    idx_test = np.sort(idx_test)
+
+    train_mask = sample_mask(idx_train, all_label.shape[0])
+    val_mask = sample_mask(idx_val, all_label.shape[0])
+    test_mask = sample_mask(idx_test, all_label.shape[0])
+
+    y_train = np.zeros(all_label.shape)
+    y_val = np.zeros(all_label.shape)
+    y_test = np.zeros(all_label.shape)
+    y_train[train_mask, :] = all_label[train_mask, :]
+    y_val[val_mask, :] = all_label[val_mask, :]
+    y_test[test_mask, :] = all_label[test_mask, :]
+
+    return y_train, y_val, y_test, train_mask, val_mask, test_mask
+
+
+
+def load_amazon_ca(dataset_str, path, label_ratio=0.2):
+
+    if dataset_str == "computers":
+        filename = "amazon_electronics_computers.npz"
+    elif dataset_str == "photo":
+        filename = "amazon_electronics_photo.npz"
+    elif dataset_str == "cs":
+        filename = "ms_academic_cs.npz"
+    elif dataset_str == "phy":
+        filename = "ms_academic_phy.npz"
+    else:
+        filename = None
+    
+    adj, attribute, labels = load_npz_to_sparse_graph("{}/{}/{}".format(path, dataset_str, filename))
+    adj = adj + adj.T
+
+    graph = defaultdict(list)
+    row, col = adj.nonzero()
+    for (i, j) in zip(row, col):
+        graph[i].append(j)
+
+    y_train, y_val, y_test, train_mask, val_mask, test_mask = split_data_label(labels, label_ratio)
+
+    return adj, attribute, y_train, y_val, y_test, train_mask, val_mask, test_mask, graph
+
+
+    
+
+
+    

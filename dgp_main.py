@@ -25,28 +25,32 @@ flags.DEFINE_string('data_path', 'data', 'path of datasets')
 flags.DEFINE_string('dataset', 'cora', 'Dataset string.')  # 'cora', 'citeseer', 'pubmed'
 flags.DEFINE_string("label_ratio", "None", "ratio of labelled data, default split when label_ratio is None")
 flags.DEFINE_integer("max_degree", 128, "")
-flags.DEFINE_integer("batch_size", 256, "") 
-flags.DEFINE_integer("val_batch_size", 256, "") 
+flags.DEFINE_integer("batch_size", 256, "") # cora: 256; 
+flags.DEFINE_integer("val_batch_size", 256, "")
 
-flags.DEFINE_bool("trans_feature", False, "")
-flags.DEFINE_integer("feature_dim", 128, "")
 
-flags.DEFINE_string("hidden", "[16]", "hidden units of DGP")
+flags.DEFINE_bool("trans_feature", False, "") # cora: False
+flags.DEFINE_string("feature_dim", "[32]", "")
+
+flags.DEFINE_string("hidden", "[32]", "hidden units of DGP") # cora: [32]
 flags.DEFINE_string("n_neighbors", "[25, 10]", "")
-flags.DEFINE_string("infernet", "[[32], [32]]", "")
-flags.DEFINE_integer("n_omega", 256, "")
+flags.DEFINE_string("infernet", "[[64, 64], [64]]", "")
+flags.DEFINE_integer("n_omega", 512, "")
 
-flags.DEFINE_integer("sample_size", 1, "")
+flags.DEFINE_integer("sample_size", 25, "")
 flags.DEFINE_float("dropout", 0.5, "")  # 0.5 
-flags.DEFINE_float("weight_decay", 5e-4, "") 
-flags.DEFINE_float("lr", 0.01, "learning rate") 
+flags.DEFINE_float("weight_decay", 5e-4, "")
+flags.DEFINE_float("lamb", 1.0, "scale of kl divergence")
+flags.DEFINE_float("lr", 0.001, "learning rate")
 
-flags.DEFINE_integer("steps", 1000, "steps of optimization") 
+flags.DEFINE_integer("pretrain_step", 500, "number of pretrain steps")
+flags.DEFINE_integer("steps", 500, "steps of optimization")
 flags.DEFINE_string("exp_name", "default_experiment", "experiment name")
 
 
 # parameter config
 label_ratio = eval(FLAGS.label_ratio)
+feature_dim = eval(FLAGS.feature_dim)
 hidden = eval(FLAGS.hidden)
 n_neighbors = eval(FLAGS.n_neighbors)
 infernet = eval(FLAGS.infernet)
@@ -100,6 +104,18 @@ def evaluate(graph, placeholders, model, sess, test=False):
     
     return np.mean(acc_val)
 
+def pretrain(graph, placeholders, model, sess):
+
+    for i in range(FLAGS.pretrain_step):
+        train_feed_dict = graph.next_batch_feed_dict(placeholders, localSim=False)
+        _, loss, acc_train = sess.run([model.opt_step_pt, model.loss, model.accuracy], feed_dict=train_feed_dict)
+        print("pretrain step {}: loss: {:.6f}, accuracy: {:.5f}".format(i, loss, acc_train), end=", ")
+
+        acc_val = evaluate(graph, placeholders, model, sess)
+        print("Accuracy_val: {:.5f}".format(acc_val), end=", ")
+
+        acc_test = evaluate(graph, placeholders, model, sess, test=True)
+        print("Accuracy_test: {:.5f}".format(acc_test))
 
 
 def train(graph, placeholders, model, sess, saver, model_path):
@@ -152,8 +168,8 @@ if __name__ == "__main__":
     assert len(hidden) == len(n_neighbors) # number of hidden layers should be equal to length of n_neighbors
 
     model = SemiRFDGP(placeholders, graph.feature, graph.node_neighbors, hidden, n_neighbors, infernet, FLAGS.n_omega,
-                        FLAGS.trans_feature, feature_dim=FLAGS.feature_dim, sample_size=FLAGS.sample_size,
-                        dropout=FLAGS.dropout, weight_decay=FLAGS.weight_decay, lr=FLAGS.lr)
+                        FLAGS.trans_feature, feature_dim=feature_dim, sample_size=FLAGS.sample_size,
+                        dropout=FLAGS.dropout, weight_decay=FLAGS.weight_decay, lamb=FLAGS.lamb, lr=FLAGS.lr)
     print("successfully initialized the model")
 
     
@@ -168,6 +184,7 @@ if __name__ == "__main__":
     os.mkdir(model_path)
     
     # train the model
+    pretrain(graph, placeholders, model, sess)
     train(graph, placeholders, model, sess, saver, model_path)
 
     # evaluate the model

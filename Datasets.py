@@ -5,13 +5,14 @@ Created on Tue Jan 14 16:59:12 2020
 @author: fangjy
 """
 import os
+import time
 import pandas
 import numpy as np
 import networkx as nx
 import scipy.sparse as sp
 from collections import defaultdict, deque
 from sklearn.feature_extraction.text import TfidfTransformer
-from utils.load_data import load_data, load_AN
+from utils.load_data import load_data, load_AN, load_amazon_ca
 from utils.util import calculate_SE_kernel, normalize_adj, preprocess_features
 
 from io import BytesIO
@@ -105,7 +106,6 @@ class ShortestPathAttr(object):
         return globalSim
 
 
-
 class Graph(object):
 
     def __init__(self, dataset_str, path="data", with_feature=True, label_ratio=None,
@@ -118,8 +118,11 @@ class Graph(object):
 
         if dataset_str in ['cora', 'citeseer', 'pubmed'] and label_ratio is None:
             adj, features, y_train, y_val, y_test, train_mask, val_mask, test_mask, graph = load_data(dataset_str, path)
-        else:
+        elif dataset_str in ['BlogCatalog', 'Flickr']:
             adj, features, y_train, y_val, y_test, train_mask, val_mask, test_mask, graph = load_AN(dataset_str, path, ratio=label_ratio)
+        else:
+            label_ratio = 0.2
+            adj, features, y_train, y_val, y_test, train_mask, val_mask, test_mask, graph = load_amazon_ca(dataset_str, path, label_ratio=label_ratio)
 
         self.n_nodes, self.n_features = features.shape
         self.n_classes = y_train.shape[1]
@@ -154,11 +157,18 @@ class Graph(object):
         # self.globalSim = self.load_globalSim(dataset_str, n_hop, max_degree, path_length, path_dropout)
         
         # settings for batch sampling
+        self.nodes_label = np.array([i for i in range(self.n_nodes) if train_mask[i]])
         self.nodes_unlabel = np.array([i for i in range(self.n_nodes) if not train_mask[i]])
-        self.batch_num = 0
         self.val_batch_num = 0
-        batch_size = self.n_nodes if batch_size == -1 else batch_size
-        self.batch_size = batch_size - len(self.idx_train) # 每个batch都加入训练数据
+        if dataset_str in ['cora', 'citeseer', 'pubmed'] and label_ratio is None:
+            self.batch_num = 0
+            batch_size = self.n_nodes if batch_size == -1 else batch_size
+            self.batch_size = batch_size - len(self.idx_train) # 每个batch都加入训练数据
+        else:
+            self.batch_num_label = 0
+            self.batch_num_unlabel = 0
+            self.batch_size_label = int(np.round(batch_size * label_ratio))
+            self.batch_size_unlabel = int(np.round(batch_size * (1-label_ratio)))
 
 
     def val_batch_feed_dict(self, placeholders, val_batch_size=256, test=False, localSim=True):
@@ -207,6 +217,32 @@ class Graph(object):
         return self.batch_feed_dict(batch_nodes, placeholders, localSim)
 
     
+    def next_batch_feed_dict_v2(self, placeholders):
+
+        """
+        适用于有标签的数据比较多的情况；
+        """
+        if self.batch_num_label * self.batch_size_label >= len(self.nodes_label):
+            self.nodes_label = np.random.permutation(self.nodes_label)
+            self.batch_num_label = 0
+        if self.batch_num_unlabel * self.batch_size_unlabel >= len(self.nodes_unlabel):
+            self.nodes_unlabel = np.random.permutation(self.nodes_unlabel)
+            self.batch_num_unlabel = 0
+        
+        idx_start_label = self.batch_num_label * self.batch_size_label 
+        idx_end_label = min(idx_start_label + self.batch_size_label, len(self.nodes_label))
+        self.batch_num_label += 1 
+        idx_start_unlabel = self.batch_num_unlabel * self.batch_size_unlabel 
+        idx_end_unlabel = min(idx_start_unlabel + self.batch_size_unlabel, len(self.nodes_unlabel))
+        self.batch_num_unlabel += 1
+
+        batch_label = self.nodes_label[idx_start_label:idx_end_label]
+        batch_unlabel = self.nodes_unlabel[idx_start_unlabel:idx_end_unlabel]
+        batch_nodes = np.concatenate([batch_label, batch_unlabel])
+
+        return self.batch_feed_dict(batch_nodes, placeholders, localSim=True) 
+
+
     def batch_feed_dict(self, nodes, placeholders, localSim):
 
         feed_dict = {}
@@ -445,9 +481,212 @@ def node_start_path(subgraph, node, path_length):
     return result
 
 
+class NodeMinibatchIterator(object):
+    
+    """ 
+    This minibatch iterator iterates over nodes for supervised learning.
+
+    G -- networkx graph
+    id2idx -- dict mapping node ids to integer values indexing feature tensor
+    placeholders -- standard tensorflow placeholders object for feeding
+    label_map -- map from node ids to class values (integer or list)
+    num_classes -- number of output classes
+    batch_size -- size of the minibatches
+    max_degree -- maximum size of the downsampled adjacency lists
+    """
+    def __init__(self, G, id2idx, placeholders, label_map, num_classes, batch_size=100, max_degree=25, **kwargs):
+
+        self.G = G
+        self.nodes = G.nodes()
+        self.id2idx = id2idx
+        self.placeholders = placeholders
+        self.batch_size = batch_size
+        self.max_degree = max_degree
+        self.batch_num = 0
+        self.label_map = label_map
+        self.num_classes = num_classes
+
+        self.adj, self.deg = self.construct_adj()
+        self.test_adj = self.construct_test_adj()
+
+        self.val_nodes = [n for n in self.G.nodes() if self.G.nodes[n]['val']]
+        self.test_nodes = [n for n in self.G.nodes() if self.G.nodes[n]['test']]
+
+        self.no_train_nodes_set = set(self.val_nodes + self.test_nodes)
+        self.train_nodes = set(G.nodes()).difference(self.no_train_nodes_set)
+        # don't train on nodes that only have edges to test set
+        self.train_nodes = [n for n in self.train_nodes if self.deg[id2idx[n]] > 0]
+
+    def _make_label_vec(self, node):
+        label = self.label_map[node]
+        if isinstance(label, list):
+            label_vec = np.array(label)
+        else:
+            label_vec = np.zeros((self.num_classes))
+            class_ind = self.label_map[node]
+            label_vec[class_ind] = 1
+        return label_vec
+
+    def construct_adj(self):
+        adj = len(self.id2idx)*np.ones((len(self.id2idx)+1, self.max_degree))
+        deg = np.zeros((len(self.id2idx),), dtype=np.int32)
+
+        for nodeid in self.G.nodes():
+            if self.G.nodes[nodeid]['test'] or self.G.nodes[nodeid]['val']:
+                continue
+            neighbors = np.array([self.id2idx[neighbor] 
+                for neighbor in self.G.neighbors(nodeid)
+                if (not self.G[nodeid][neighbor]['train_removed'])])
+            deg[self.id2idx[nodeid]] = len(neighbors)
+            if len(neighbors) == 0:
+                continue
+            if len(neighbors) > self.max_degree:
+                neighbors = np.random.choice(neighbors, self.max_degree, replace=False)
+            elif len(neighbors) < self.max_degree:
+                neighbors = np.random.choice(neighbors, self.max_degree, replace=True)
+            adj[self.id2idx[nodeid], :] = neighbors
+        return adj, deg
+
+    def construct_test_adj(self):
+        adj = len(self.id2idx)*np.ones((len(self.id2idx)+1, self.max_degree))
+        for nodeid in self.G.nodes():
+            neighbors = np.array([self.id2idx[neighbor] 
+                for neighbor in self.G.neighbors(nodeid)])
+            if len(neighbors) == 0:
+                continue
+            if len(neighbors) > self.max_degree:
+                neighbors = np.random.choice(neighbors, self.max_degree, replace=False)
+            elif len(neighbors) < self.max_degree:
+                neighbors = np.random.choice(neighbors, self.max_degree, replace=True)
+            adj[self.id2idx[nodeid], :] = neighbors
+        return adj
+
+    def end(self):
+        return self.batch_num * self.batch_size >= len(self.train_nodes)
+
+    def batch_feed_dict(self, batch_nodes, val=False):
+        batch1id = batch_nodes
+        batch1 = [self.id2idx[n] for n in batch1id]
+              
+        labels = np.vstack([self._make_label_vec(node) for node in batch1id])
+        feed_dict = dict()
+        feed_dict.update({self.placeholders['batch_size'] : len(batch1)})
+        feed_dict.update({self.placeholders['nodes']: batch1})
+        feed_dict.update({self.placeholders['Y']: labels})
+
+        # return feed_dict, labels
+        return feed_dict
+
+    def node_val_feed_dict(self, size=None, test=False):
+        if test:
+            val_nodes = self.test_nodes
+        else:
+            val_nodes = self.val_nodes
+        if not size is None:
+            val_nodes = np.random.choice(val_nodes, size, replace=True)
+        # add a dummy neighbor
+        ret_val = self.batch_feed_dict(val_nodes)
+        return ret_val[0], ret_val[1]
+
+    def incremental_node_val_feed_dict(self, size, iter_num, test=False):
+        if test:
+            val_nodes = self.test_nodes
+        else:
+            val_nodes = self.val_nodes
+        val_node_subset = val_nodes[iter_num*size:min((iter_num+1)*size, 
+            len(val_nodes))]
+
+        # add a dummy neighbor
+        ret_val = self.batch_feed_dict(val_node_subset)
+        return ret_val[0], ret_val[1], (iter_num+1)*size >= len(val_nodes), val_node_subset
+
+    def num_training_batches(self):
+        return len(self.train_nodes) // self.batch_size + 1
+
+    def next_minibatch_feed_dict(self):
+        start_idx = self.batch_num * self.batch_size
+        self.batch_num += 1
+        end_idx = min(start_idx + self.batch_size, len(self.train_nodes))
+        batch_nodes = self.train_nodes[start_idx : end_idx]
+        return batch_nodes, self.batch_feed_dict(batch_nodes)
+
+    def incremental_embed_feed_dict(self, size, iter_num):
+        node_list = self.nodes
+        val_nodes = node_list[iter_num*size:min((iter_num+1)*size, 
+            len(node_list))]
+        return self.batch_feed_dict(val_nodes), (iter_num+1)*size >= len(node_list), val_nodes
+
+    def shuffle(self):
+        """ Re-shuffle the training set.
+            Also reset the batch number.
+        """
+        self.train_nodes = np.random.permutation(self.train_nodes)
+        self.batch_num = 0
+
+
+
+class InductiveGraph(NodeMinibatchIterator):
+
+    def __init__(self, data, num_classes, placeholder, max_degree, batch_size, normalize=True):
+        
+        """
+        placeholders = {
+        'nodes': tf.placeholder(dtype=tf.int32, shape=[None]),
+        'Y': tf.placeholder(dtype=tf.float32, shape=[None, len(list(data[3].values())[0])]),
+        'localSim': tf.placeholder(dtype=tf.float32, shape=[None, None]), 
+        "batch_size": tf.placeholder(tf.int32, name='batch_size')
+        }
+        """
+        
+        super(InductiveGraph, self).__init__(data[0], data[2], placeholder, data[3], num_classes, 
+                                            batch_size=batch_size, max_degree=max_degree)
+        
+
+        self.feature = data[1].astype(np.float32)
+
+        self.n_nodes = len(self.G.nodes())
+        self.n_features = self.feature.shape[1]
+
+        if not self.feature is None:
+            # pad with dummy zero vector
+            self.feature = np.vstack([self.feature, np.zeros((self.n_features,), dtype=np.float32)])
+
+
+
+    def next_train_feed_dict(self):
+
+        batch_nodes, feed_dict = super().next_minibatch_feed_dict() # update batch_size, batch, Y
+
+        t = time.time()
+        # update localSim
+        minibatch_size = len(batch_nodes)
+
+        node_id_map = dict()
+        for (i, node) in zip(range(minibatch_size), batch_nodes):
+            node_id_map[node] = i 
+
+        localSim = np.zeros(shape=(minibatch_size, minibatch_size), dtype=np.float32)
+
+        for node in batch_nodes:
+            for neighbor in self.adj[node][:self.deg[node]]:
+                if neighbor not in batch_nodes:
+                    continue
+                localSim[node_id_map[node], node_id_map[neighbor]] = 1.0
+
+        feed_dict.update({self.placeholders["localSim"]: localSim})
+        feed_dict.update({self.placeholders["label_mask"]: np.ones(minibatch_size, dtype=np.bool)})
+        feed_dict.update({self.placeholders["node_neighbors"]: self.adj})
+
+        # print("==============={}==============".format(time.time()-t))
+
+        return feed_dict
+
+
+
+
 # {5: [1629, 2546, 1659], 1629: [1711, 1659, 5], 2546: [952, 5, 466, 628], 1659: [1629, 5]}
-if __name__ == "__main__":
+# if __name__ == "__main__":
     # from Datasets import Graph
-    g = Graph("citeseer", n_hop=1, max_degree=128)
+    # g = Graph("citeseer", n_hop=1, max_degree=128)
     # subgraph = g.get_subgraph(5, 2, 128)
     # print(subgraph)
