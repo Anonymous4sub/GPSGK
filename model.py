@@ -29,7 +29,8 @@ class StructAwareGP(object):
 
     def __init__(self, placeholders, input_features, feature_dim, n_samples, latent_layer_units, output_dim,
                 transform_feature=False, node_neighbors=None, linear_layer=False, lambda1=1.0, lambda2 = 1.0, sample_size=5,
-                dropout=0., bias=False, act=tf.nn.relu, weight_decay=0.0, lr=0.001, name="sagp", n_neighbors=10, node_neighbors_neg=None, **kwargs):
+                dropout=0., bias=False, act=tf.nn.relu, weight_decay=0.0, lr=0.001, name="sagp", 
+                n_neighbors=10, node_neighbors_neg=None, typ="class", **kwargs):
         """
         feature_dim: dimension of transformed feature, only used when transform_feture is True
         """
@@ -60,6 +61,7 @@ class StructAwareGP(object):
         self.act = act 
         self.weight_decay = weight_decay
         self.lr = lr
+        self.typ = typ
 
         # feature learning
         with tf.variable_scope("feature_mapping"):
@@ -187,13 +189,18 @@ class StructAwareGP(object):
         sim_label = -1 * tf.reduce_mean(tf.math.log(1e-6 + tf.nn.sigmoid(pos))) - tf.reduce_mean(tf.math.log(1e-6 + tf.nn.sigmoid(-1 * neg)))
         """
 
-        context = tf.matmul(self.kernelfeatures, self.context_weight)
-        sim_contex = tf.matmul(self.kernelfeatures, context, transpose_b=True)
+        self.context = tf.matmul(self.kernelfeatures, self.context_weight)
+        sim_contex = tf.matmul(self.kernelfeatures, self.context, transpose_b=True)
         mask_not_neighbor = tf.equal(self.localSim, 0.0)
         # pos_neighbor = tf.boolean_mask(sim_contex, tf.math.logical_not(mask_not_neighbor))
         # neg_neighbor = tf.boolean_mask(sim_contex, mask_not_neighbor)
-        pos_neighbor = tf.nn.dropout(tf.boolean_mask(sim_contex, tf.math.logical_not(mask_not_neighbor)), keep_prob=0.5)
-        neg_neighbor = tf.nn.dropout(tf.boolean_mask(sim_contex, mask_not_neighbor), keep_prob=0.5)
+        if self.typ == "class":
+            print("===============================classification dropout=====================================")
+            pos_neighbor = tf.nn.dropout(tf.boolean_mask(sim_contex, tf.math.logical_not(mask_not_neighbor)), keep_prob=0.5)
+            neg_neighbor = tf.nn.dropout(tf.boolean_mask(sim_contex, mask_not_neighbor), keep_prob=0.5)
+        else:
+            pos_neighbor = tf.nn.dropout(tf.boolean_mask(sim_contex, tf.math.logical_not(mask_not_neighbor)), keep_prob=0.8)
+            neg_neighbor = tf.nn.dropout(tf.boolean_mask(sim_contex, mask_not_neighbor), keep_prob=0.8)
         sim_neighbor = -1 * tf.reduce_mean(tf.math.log(1e-6 + tf.nn.sigmoid(pos_neighbor))) - tf.reduce_mean(tf.math.log(1e-6 + tf.nn.sigmoid(-1 * neg_neighbor)))
 
         # self.sim = self.lambda1 * sim_label + self.lambda2 * sim_neighbor
@@ -337,7 +344,7 @@ class StructAwareGP_Inductive(object):
 
             if self.transform_feature:
                 self.feature_dim = feature_dim
-                self.feature = GraphConvolution(self.input_features, node_neighbors, [self.feature_dim*2, self.feature_dim], [25, 20], self.batch_size,
+                self.feature = GraphConvolution(self.input_features, node_neighbors, [self.feature_dim*2, self.feature_dim], [25, 10], self.batch_size,
                                                 dropout=self.dropout, act=self.act)(self.batch)
             else:
                 self.feature_dim = self.input_dim
@@ -358,7 +365,8 @@ class StructAwareGP_Inductive(object):
         # Bayesian linear regression
         with tf.variable_scope("posterior"):
             self.W_mu = glorot([self.output_dim, self.n_samples], name='out_weights_mu')
-            self.W_logstd = glorot([self.output_dim, self.n_samples], name='out_weights_logstd')
+            # self.W_logstd = glorot([self.output_dim, self.n_samples], name='out_weights_logstd')
+            self.W_logstd = tf.Variable(-5.0, dtype=tf.float32) * tf.ones([self.output_dim, self.n_samples])
 
             if self.linear_layer:
                 self.linear_W = glorot([self.output_dim, self.n_classes])
@@ -387,6 +395,7 @@ class StructAwareGP_Inductive(object):
         W = self.W_mu + u * tf.math.exp(self.W_logstd)
         W = tf.reduce_mean(W, axis=0)
 
+        # self.kernelfeatures = tf.nn.dropout(self.kernelfeatures, keep_prob=1-0.5)
         output = tf.matmul(self.kernelfeatures, W, transpose_b=True)
 
         self.logits = tf.matmul(output, self.linear_W)
@@ -397,8 +406,11 @@ class StructAwareGP_Inductive(object):
             self.reconstruct_loss = masked_softmax_cross_entropy(self.logits, self.Y, self.label_mask)
         else:
             self.reconstruct_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits, labels=self.Y))
+            # sigmoid_loss = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits, labels=self.Y)
+            # self.reconstruct_loss = tf.reduce_mean(tf.reduce_sum(sigmoid_loss, axis=1))
 
-        scale = 1. / tf.cast(tf.reduce_sum(self.label_mask), tf.float32)
+        # scale = 1. / tf.cast(tf.reduce_sum(self.label_mask), tf.float32)
+        scale = 1. / (tf.cast(tf.reduce_sum(self.label_mask), tf.float32) * self.Y.get_shape().as_list()[1])
         self.kl = scale * self.obtain_prior_KL()
 
 
@@ -694,7 +706,13 @@ class SemiRFDGP(object):
         with tf.variable_scope("trans_feature"):    
             if trans_feature:
                 feature = NeuralNet(self.input_dim, feature_dim, dropout=dropout, act=act)(input_features)
-                # feature = GraphConvolution(input_features, node_neighbors, feature_dim, [25, 10], self.batch_size, dropout=dropout, act=tf.nn.relu)(self.batch)
+                """
+                if len(feature_dim) == 1:
+                    nns = [25]
+                if len(feature_dim) == 2:
+                    nns = [25, 10]
+                feature = GraphConvolution(input_features, node_neighbors, feature_dim, nns, self.batch_size, dropout=dropout, act=tf.nn.relu)(self.batch)
+                """
             else:
                 feature = tf.identity(input_features)
         

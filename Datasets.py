@@ -506,6 +506,7 @@ class NodeMinibatchIterator(object):
         self.label_map = label_map
         self.num_classes = num_classes
 
+        self.neighbors_train = []
         self.adj, self.deg = self.construct_adj()
         self.test_adj = self.construct_test_adj()
 
@@ -514,8 +515,13 @@ class NodeMinibatchIterator(object):
 
         self.no_train_nodes_set = set(self.val_nodes + self.test_nodes)
         self.train_nodes = set(G.nodes()).difference(self.no_train_nodes_set)
+        print("==========================={} =========================".format(len(self.train_nodes)))
         # don't train on nodes that only have edges to test set
         self.train_nodes = [n for n in self.train_nodes if self.deg[id2idx[n]] > 0]
+        print(self.adj)
+        print(self.deg)
+        # print(self.train_nodes)
+        print("length of train_nodes: ====================== {}==================".format(len(self.train_nodes)))
 
     def _make_label_vec(self, node):
         label = self.label_map[node]
@@ -538,6 +544,7 @@ class NodeMinibatchIterator(object):
                 for neighbor in self.G.neighbors(nodeid)
                 if (not self.G[nodeid][neighbor]['train_removed'])])
             deg[self.id2idx[nodeid]] = len(neighbors)
+            self.neighbors_train.append(neighbors)
             if len(neighbors) == 0:
                 continue
             if len(neighbors) > self.max_degree:
@@ -567,7 +574,7 @@ class NodeMinibatchIterator(object):
     def batch_feed_dict(self, batch_nodes, val=False):
         batch1id = batch_nodes
         batch1 = [self.id2idx[n] for n in batch1id]
-              
+
         labels = np.vstack([self._make_label_vec(node) for node in batch1id])
         feed_dict = dict()
         feed_dict.update({self.placeholders['batch_size'] : len(batch1)})
@@ -575,7 +582,8 @@ class NodeMinibatchIterator(object):
         feed_dict.update({self.placeholders['Y']: labels})
 
         # return feed_dict, labels
-        return feed_dict
+        # return feed_dict
+        return batch1, feed_dict
 
     def node_val_feed_dict(self, size=None, test=False):
         if test:
@@ -589,16 +597,19 @@ class NodeMinibatchIterator(object):
         return ret_val[0], ret_val[1]
 
     def incremental_node_val_feed_dict(self, size, iter_num, test=False):
+
         if test:
             val_nodes = self.test_nodes
         else:
             val_nodes = self.val_nodes
+
         val_node_subset = val_nodes[iter_num*size:min((iter_num+1)*size, 
             len(val_nodes))]
 
         # add a dummy neighbor
-        ret_val = self.batch_feed_dict(val_node_subset)
-        return ret_val[0], ret_val[1], (iter_num+1)*size >= len(val_nodes), val_node_subset
+        _, feed_dict_val = self.batch_feed_dict(val_node_subset)
+        # return ret_val[0], ret_val[1], (iter_num+1)*size >= len(val_nodes), val_node_subset
+        return feed_dict_val, (iter_num+1)*size >= len(val_nodes), len(val_node_subset)
 
     def num_training_batches(self):
         return len(self.train_nodes) // self.batch_size + 1
@@ -608,7 +619,7 @@ class NodeMinibatchIterator(object):
         self.batch_num += 1
         end_idx = min(start_idx + self.batch_size, len(self.train_nodes))
         batch_nodes = self.train_nodes[start_idx : end_idx]
-        return batch_nodes, self.batch_feed_dict(batch_nodes)
+        return self.batch_feed_dict(batch_nodes)
 
     def incremental_embed_feed_dict(self, size, iter_num):
         node_list = self.nodes
@@ -666,9 +677,11 @@ class InductiveGraph(NodeMinibatchIterator):
             node_id_map[node] = i 
 
         localSim = np.zeros(shape=(minibatch_size, minibatch_size), dtype=np.float32)
+        # print(batch_nodes)
 
         for node in batch_nodes:
-            for neighbor in self.adj[node][:self.deg[node]]:
+            #for neighbor in np.unique(self.adj[node]):
+            for neighbor in self.neighbors_train[node]:
                 if neighbor not in batch_nodes:
                     continue
                 localSim[node_id_map[node], node_id_map[neighbor]] = 1.0
@@ -682,6 +695,243 @@ class InductiveGraph(NodeMinibatchIterator):
         return feed_dict
 
 
+class LinkGraph(object):
+
+    def __init__(self, dataset_str, path="data", with_feature=True, label_ratio=None, max_degree=128, batch_size=512):
+
+        if dataset_str in ['cora', 'citeseer', 'pubmed'] and label_ratio is None:
+            adj, features, y_train, y_val, y_test, train_mask, val_mask, test_mask, graph = load_data(dataset_str, path)
+        elif dataset_str in ['BlogCatalog', 'Flickr', 'cora', 'citeseer', 'pubmed']:
+            adj, features, y_train, y_val, y_test, train_mask, val_mask, test_mask, graph = load_AN(dataset_str, path, ratio=label_ratio)
+        else:
+            label_ratio = 0.2
+            adj, features, y_train, y_val, y_test, train_mask, val_mask, test_mask, graph = load_amazon_ca(dataset_str, path, label_ratio=label_ratio)
+
+        self.n_nodes, self.n_features = features.shape
+        self.n_classes = y_train.shape[1]
+
+        # split edges into training, validation and test sets
+        adj_train, train_edges, val_edges, val_edges_false, test_edges, test_edges_false, graph = self.make_train_test_edges(adj, graph)
+        self.adj = adj_train.toarray()
+        self.train_edges = train_edges
+        self.val_edges = val_edges
+        self.val_edges_false = val_edges_false
+        self.test_edges = test_edges
+        self.test_edges_false = test_edges_false
+
+        self.graph = graph
+        self.node_neighbors, self.node_degrees = self.get_neighbors_degree(max_degree) # node_neighbors:[n_nodes+1, max_degree]
+
+        if not with_feature:
+            features = np.eye(features.shape[0], dtype=features.dtype)
+        feature = preprocess_features(features)
+        self.feature = np.vstack([feature, np.zeros((self.n_features,))]).astype(np.float32) # add a dummy node for feature aggregation
+
+        self.y_train = y_train
+        self.y_val = y_val
+        self.y_test = y_test
+        self.y_overall = self.y_train + self.y_val + self.y_test
+        
+        self.train_mask = train_mask
+        self.val_mask = val_mask
+        self.test_mask = test_mask
+
+        self.idx_train = np.arange(self.n_nodes)[train_mask]
+        self.idx_val = np.arange(self.n_nodes)[val_mask]
+        self.idx_test = np.arange(self.n_nodes)[test_mask]
+    
+        
+        # settings for batch sampling
+        self.batch_num = 0
+        self.batch_size = batch_size
+        self.val_batch_num = 0
+
+
+    def val_batch_feed_dict(self, placeholders, val_batch_size=256, test=False, localSim=True):
+
+        if test:
+            nodes = self.idx_test
+        else:
+            nodes = self.idx_val
+
+        if self.val_batch_num * val_batch_size >= len(nodes):
+            self.val_batch_num = 0
+            return None
+        
+        idx_start = self.val_batch_num * val_batch_size
+        idx_end = min(idx_start + val_batch_size, len(nodes))
+        self.val_batch_num += 1
+
+        batch_nodes = nodes[idx_start:idx_end]        
+        
+        feed_dict = {}
+        n_nodes = len(batch_nodes)
+        feed_dict.update({placeholders["nodes"]: batch_nodes})
+        feed_dict.update({placeholders['Y']: self.y_overall[batch_nodes]})
+        feed_dict.update({placeholders['label_mask']: np.ones(n_nodes, dtype=np.bool)})
+        if localSim:
+            feed_dict.update({placeholders['localSim']: self.adj[batch_nodes][:, batch_nodes]})
+        feed_dict.update({placeholders["batch_size"]: n_nodes})
+
+        return feed_dict
+        
+
+    def next_batch_feed_dict(self, placeholders):
+
+        if self.batch_num * self.batch_size >= len(self.train_edges):
+            self.train_edges = np.random.permutation(self.train_edges)
+            self.batch_num = 0
+        
+        idx_start = self.batch_num * self.batch_size
+        idx_end = min(idx_start + self.batch_size, len(self.train_edges))
+        self.batch_num += 1
+
+        batch_edges = self.train_edges[idx_start : idx_end]
+        batch_nodes = list()
+        batch_id = 0
+        batch_id_map = dict()
+
+        for edge in batch_edges:
+
+            if edge[0] not in batch_id_map:
+                batch_nodes.append(edge[0])
+                batch_id_map[edge[0]] = batch_id
+                batch_id += 1
+            if edge[1] not in batch_id_map:
+                batch_nodes.append(edge[1])
+                batch_id_map[edge[1]] = batch_id
+                batch_id += 1
+        
+        # 获取localSim
+        localSim = np.zeros((len(batch_nodes), len(batch_nodes)), dtype=np.float32)
+        for node in batch_nodes:
+            for neighbor in self.graph[node]:
+                if neighbor not in batch_id_map: continue
+                localSim[batch_id_map[node], batch_id_map[neighbor]] = 1.0        
+
+        return self.batch_feed_dict(batch_nodes, placeholders, localSim)
+
+
+
+    def batch_feed_dict(self, nodes, placeholders, localSim):
+
+        feed_dict = {}
+        
+        feed_dict.update({placeholders["nodes"]: nodes})
+        feed_dict.update({placeholders['Y']: self.y_train[nodes]})
+        feed_dict.update({placeholders['label_mask']: self.train_mask[nodes]})
+        feed_dict.update({placeholders['localSim']: self.adj[nodes][:, nodes]})
+        feed_dict.update({placeholders["batch_size"]: len(nodes)})
+        
+        return feed_dict
+        
+
+    def get_neighbors_degree(self, max_degree):
+
+        adj = self.n_nodes * np.ones((self.n_nodes + 1, max_degree), dtype=np.int32)
+        deg = np.ones(self.n_nodes, dtype=np.int32)
+
+        for node in range(self.n_nodes):
+            neighbors = np.array(self.graph[node])
+            deg[node] = len(neighbors)
+            if deg[node] == 0:
+                continue
+            if deg[node] > max_degree:
+                neighbors = np.random.choice(neighbors, max_degree, replace=False)
+            elif deg[node] < max_degree:
+                neighbors = np.random.choice(neighbors, max_degree, replace=True)
+
+            adj[node, :] = neighbors
+
+        return adj, deg
+
+    
+    def get_neighbors(self, node, max_degree):
+
+        if len(self.graph[node]) <= max_degree:
+            return self.graph[node]
+
+        else:
+            neighbors = np.random.permutation(self.graph[node])[:max_degree]
+            return list(neighbors)
+
+
+    def make_train_test_edges(self, adj, graph, p_val=0.05, p_test=0.10):
+        """
+        adj is an adjacant matrix (scipy sparse matrix)
+
+        return adj_train, train_edges, val_edges, val_edges_false, test_edges, test_edges_false
+        adj_train : training adjacant matrix
+        train_edges : array indicating the training edges
+        val_edges : array indicating the validation edges
+        val_edge_false: array indicating the false edges in validation dataset
+        """
+        adj_row = adj.nonzero()[0]
+        adj_col = adj.nonzero()[1]
+
+        # get deges from adjacant matrix
+        edges = []
+        edges_dic = {}
+        for i in range(len(adj_row)):
+            edges.append([adj_row[i], adj_col[i]])
+            edges_dic[(adj_row[i], adj_col[i])] = 1
+
+        # split the dataset into training,validation and test dataset
+        num_test = int(np.floor(len(edges) * p_test))
+        num_val = int(np.floor(len(edges) * p_val))
+        all_edge_idx = np.arange(len(edges))
+        np.random.shuffle(all_edge_idx)
+        val_edge_idx = all_edge_idx[:num_val]
+        test_edge_idx = all_edge_idx[num_val:(num_val + num_test)]
+        train_edge_idx = all_edge_idx[(num_val + num_test):]
+
+        edges = np.asarray(edges)
+        test_edges = edges[test_edge_idx]  # numpy array
+        val_edges = edges[val_edge_idx]  # numpy array
+        train_edges = edges[train_edge_idx]  # numpy array
+
+        for edge in val_edges:
+            graph[edge[0]].remove(edge[1])
+        for edge in test_edges:
+            graph[edge[0]].remove(edge[1])
+
+        test_edges_false = []
+        val_edges_false = []
+        false_edges_dic = {}
+        while len(test_edges_false) < num_test or len(val_edges_false) < num_val:
+            i = np.random.randint(0, adj.shape[0])
+            j = np.random.randint(0, adj.shape[0])
+            if (i, j) in edges_dic:
+                continue
+            if (j, i) in edges_dic:
+                continue
+            if (i, j) in false_edges_dic:
+                continue
+            if (j, i) in false_edges_dic:
+                continue
+            else:
+                false_edges_dic[(i, j)] = 1
+                false_edges_dic[(j, i)] = 1
+
+            if np.random.random_sample() > 0.333:
+                if len(test_edges_false) < num_test:
+                    test_edges_false.append([i, j])
+                else:
+                    if len(val_edges_false) < num_val:
+                        val_edges_false.append([i, j])
+            else:
+                if len(val_edges_false) < num_val:
+                    val_edges_false.append([i, j])
+                else:
+                    if len(test_edges_false) < num_test:
+                        test_edges_false.append([i, j])
+
+        val_edges_false = np.asarray(val_edges_false)
+        test_edges_false = np.asarray(test_edges_false)
+        data = np.ones(train_edges.shape[0], dtype=adj.dtype)
+        adj_train = sp.csr_matrix((data, (train_edges[:, 0], train_edges[:, 1])), shape=adj.shape)
+        # adj_train = adj_train + adj_train.T
+        return adj_train, train_edges, val_edges, val_edges_false, test_edges, test_edges_false, graph
 
 
 # {5: [1629, 2546, 1659], 1629: [1711, 1659, 5], 2546: [952, 5, 466, 628], 1659: [1629, 5]}

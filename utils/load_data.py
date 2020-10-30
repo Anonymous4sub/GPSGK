@@ -335,8 +335,25 @@ def load_AN(dataset, path, ratio=20):
 def load_inductive_data(prefix, normalize=True, load_walks=False):
     
     G_data = json.load(open(prefix + "-G.json")) # dict
-    
+
+    if prefix.split("/")[-1] == "reddit":
+
+        id_map = json.load(open(prefix + "-id_map.json"))
+        id_map_reverse = dict()
+        for key, value in id_map.items():
+            id_map_reverse[value] = key
+        
+        f = lambda x: {'source':id_map_reverse[x['source']], 'target':id_map_reverse[x['target']]}
+        links = list(map(f, G_data["links"]))
+        G_data["links"] = links
+        print("successfully transform the link data")
+
     G = json_graph.node_link_graph(G_data)
+    
+    if isinstance(list(G.nodes())[0], int):
+        conversion = lambda x: int(x)
+    else:
+        conversion = lambda x: x
     
     if os.path.exists(prefix + "-feats.npy"):
         feats = np.load(prefix + "-feats.npy")
@@ -344,20 +361,23 @@ def load_inductive_data(prefix, normalize=True, load_walks=False):
         print("No features present.. Only identity features will be used.")
         feats = None
 
-    id_map = json.load(open(prefix + "-id_map.json"))
-    id_map = {int(k):v for k, v in id_map.items()}
+    id_map = json.load(open(prefix + "-id_map.json"))    
+    id_map = {conversion(k):v for k, v in id_map.items()}
     
     # walks = []
     class_map = json.load(open(prefix + "-class_map.json"))
-    class_map = {int(k):v for k, v in class_map.items()}
+    class_map = {conversion(k):v for k, v in class_map.items()}
 
     ## Remove all nodes that do not have val/test annotations
     ## (necessary because of networkx weirdness with the Reddit data)
     broken_count = 0
+    remove_nodes = []
     for node in G.nodes():
         if not 'val' in G.nodes[node] or not 'test' in G.nodes[node]:
-            G.remove_node(node)
+            # G.remove_node(node)
+            remove_nodes.append(node)
             broken_count += 1
+    G.remove_nodes_from(remove_nodes)
     print("Removed {:d} nodes that lacked proper annotations due to networkx versioning issues".format(broken_count))
 
     ## Make sure the graph has edge train_removed annotations
@@ -399,7 +419,7 @@ def load_npz_to_sparse_graph(file_name):
     sparse_graph : SparseGraph
         Graph in sparse matrix format.
     """
-    with np.load(file_name) as loader:
+    with np.load(file_name, allow_pickle=True) as loader:
         loader = dict(loader)
         adj_matrix = sp.csr_matrix((loader['adj_data'], loader['adj_indices'], loader['adj_indptr']),
                                    shape=loader['adj_shape'])

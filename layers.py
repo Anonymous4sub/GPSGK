@@ -321,8 +321,8 @@ class RFFAggregator(Layer):
     def _call(self, inputs):
 
         self_vecs, neigh_vecs = inputs
-        neigh_vecs = tf.nn.dropout(neigh_vecs, keep_prob = 1-self.dropout)
-        self_vecs = tf.nn.dropout(self_vecs, keep_prob = 1-self.dropout)
+        # neigh_vecs = tf.nn.dropout(neigh_vecs, keep_prob = 1-self.dropout)
+        # self_vecs = tf.nn.dropout(self_vecs, keep_prob = 1-self.dropout)
 
         self_vecs = tf.expand_dims(self_vecs, axis=1)  # [batch_size, 1, input_dim]
         all_vecs = tf.concat([neigh_vecs, self_vecs], axis=1) # [batch_size, n_neighbors+1, input_dim]
@@ -340,12 +340,13 @@ class RFFAggregator(Layer):
         #kernelfeatures = tf.matmul(all_vecs, self.kernel_params)
 
         W = tf.reduce_mean(self.W_mu + self.u * tf.math.exp(self.W_logstd), axis=0)
+        kernelfeatures = tf.nn.dropout(kernelfeatures, keep_prob=1-self.dropout)
         output = tf.matmul(kernelfeatures, W)  # [batch_size, n_neighbors+1, output_dim]
 
         if self.res_connection:
             output = output + self.res_block(self_vecs)
 
-        output = tf.layers.batch_normalization(output)
+        # output = tf.layers.batch_normalization(output)
         output = tf.reduce_mean(output, axis=1)  
 
         return output

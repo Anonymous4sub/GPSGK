@@ -28,23 +28,23 @@ flags.DEFINE_string("label_ratio", "None", "ratio of labelled data, default spli
 flags.DEFINE_bool("sigmoid", True, " ")
 
 flags.DEFINE_integer("n_hop", 1, "") # Cora: 1
-flags.DEFINE_integer("max_degree", 128, "")
+flags.DEFINE_integer("max_degree", 100, "")
 flags.DEFINE_integer("path_length", 1, "") # 1
 flags.DEFINE_float("path_dropout", 0.2, " ")  # 0.2
 
-flags.DEFINE_integer("feature_dim", 128, "dimension of transformed feature") # cora: 64, citeseer:64
-flags.DEFINE_integer("n_samples", 780, "number of samples of omega") # cora: 780; citeseer:1000; pubmed:1000
+flags.DEFINE_integer("feature_dim", 256, "dimension of transformed feature") # cora: 64, citeseer:64
+flags.DEFINE_integer("n_samples", 1000, "number of samples of omega") # cora: 780; citeseer:1000; pubmed:1000
 flags.DEFINE_string("latent_layer_units", "[64, 64]", "") # cora: [64, 64]; citeseer:[64, 64]
 flags.DEFINE_float("lambda1", 0.001, " ")  # cora: 0.001; citeseer:0.001
-flags.DEFINE_float("lambda2", 1e-4, " ")  # cora: 1e-4; citeseer:1e-4
+flags.DEFINE_float("lambda2", 1e-6, " ")  # cora: 1e-4; citeseer:1e-4
 
 flags.DEFINE_integer("batch_size", 512, "") # cora: 512; citeseer:512
 flags.DEFINE_integer("val_batch_size", 256, "") # cora: 256; citeseer:256
-flags.DEFINE_integer("steps", 1000, "steps of optimization") # cora: 1000
-flags.DEFINE_integer("pretrain_step", 2000, " ") # cora: 100; citeseer:100
-flags.DEFINE_float("dropout", 0.5, "")  # 0.5 
+flags.DEFINE_integer("steps", 2000, "steps of optimization") # cora: 1000
+flags.DEFINE_integer("pretrain_step", 1000, " ") # cora: 100; citeseer:100
+flags.DEFINE_float("dropout", 0.1, "")  # 0.5 
 flags.DEFINE_float("weight_decay", 5e-4, "") # cora: 5e-4; citeseer:5e-4
-flags.DEFINE_float("lr", 0.01, "learning rate") # cora: 0.0005; citeseer:0.0005
+flags.DEFINE_float("lr", 0.001, "learning rate") # cora: 0.0005; citeseer:0.0005
 flags.DEFINE_float("tau", 0.5, "") # cora: 0.5; citeseer:0.6, pubmed:0.9
 
 flags.DEFINE_integer("early_stopping", 20, " ")
@@ -121,9 +121,14 @@ def incremental_evaluate(sess, model, minibatch_iter, size, test=False):
 
     while not finished:
 
-        feed_dict_val, batch_labels, finished, _  = minibatch_iter.incremental_node_val_feed_dict(size, iter_num, test=test)
+        feed_dict_val, finished, n_nodes = minibatch_iter.incremental_node_val_feed_dict(size, iter_num, test=test)
         feed_dict_val.update({minibatch_iter.placeholders["node_neighbors"]: minibatch_iter.test_adj})
+        feed_dict_val.update({minibatch_iter.placeholders["label_mask"]: np.ones(n_nodes, dtype=np.bool)})
+        feed_dict_val.update({minibatch_iter.placeholders["localSim"]: np.zeros((n_nodes, n_nodes), dtype=np.float32)})
+
         node_outs_val = sess.run([model.logits], feed_dict=feed_dict_val)
+
+        batch_labels = feed_dict_val[minibatch_iter.placeholders["Y"]]
         val_preds.append(node_outs_val[0])
         labels.append(batch_labels)
         iter_num += 1
@@ -186,7 +191,7 @@ def train_iterative(graph, placeholders, model, sess, saver, model_path):
             if metric_test[0] > max_acc_val:
                 save_path = saver.save(sess, "{}/model_best.ckpt".format(model_path), global_step=i)
                 print("=================successfully save the model at: {}=======================".format(save_path))
-                max_acc_val = metric_test[1]
+                max_acc_val = metric_test[0]
         
 
 
@@ -233,7 +238,10 @@ if __name__ == "__main__":
 
     # load data
     data = load_inductive_data("{}/{}/{}".format(FLAGS.data_path, FLAGS.dataset, FLAGS.dataset))
-    n_classes = len(list(data[3].values())[0])
+    if isinstance(list(data[-1].values())[0], list):
+        n_classes = len(list(data[3].values())[0])
+    else:
+        n_classes = len(set(data[-1].values()))
 
     # set placeholder
     placeholders = {

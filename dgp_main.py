@@ -30,11 +30,11 @@ flags.DEFINE_integer("val_batch_size", 256, "")
 
 
 flags.DEFINE_bool("trans_feature", False, "") # cora: False
-flags.DEFINE_string("feature_dim", "[32]", "")
+flags.DEFINE_string("feature_dim", "[64]", "")
 
-flags.DEFINE_string("hidden", "[32]", "hidden units of DGP") # cora: [32]
+flags.DEFINE_string("hidden", "[16]", "hidden units of DGP") # cora: [32]
 flags.DEFINE_string("n_neighbors", "[25, 10]", "")
-flags.DEFINE_string("infernet", "[[64, 64], [64]]", "")
+flags.DEFINE_string("infernet", "[[32, 32], [32]]", "")
 flags.DEFINE_integer("n_omega", 512, "")
 
 flags.DEFINE_integer("sample_size", 25, "")
@@ -44,7 +44,7 @@ flags.DEFINE_float("lamb", 1.0, "scale of kl divergence")
 flags.DEFINE_float("lr", 0.001, "learning rate")
 
 flags.DEFINE_integer("pretrain_step", 500, "number of pretrain steps")
-flags.DEFINE_integer("steps", 500, "steps of optimization")
+flags.DEFINE_integer("steps", 800, "steps of optimization")
 flags.DEFINE_string("exp_name", "default_experiment", "experiment name")
 
 
