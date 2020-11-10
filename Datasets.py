@@ -13,7 +13,7 @@ import scipy.sparse as sp
 from collections import defaultdict, deque
 from sklearn.feature_extraction.text import TfidfTransformer
 from utils.load_data import load_data, load_AN, load_amazon_ca
-from utils.util import calculate_SE_kernel, normalize_adj, preprocess_features
+from utils.util import calculate_SE_kernel, normalize_adj, preprocess_features, sparse_to_tuple
 
 from io import BytesIO
 from urllib.request import urlopen
@@ -108,8 +108,8 @@ class ShortestPathAttr(object):
 
 class Graph(object):
 
-    def __init__(self, dataset_str, path="data", with_feature=True, label_ratio=None,
-                n_hop=2, max_degree=128, path_length=1, path_dropout=0.5, batch_size=512):
+    def __init__(self, dataset_str, path="data", with_feature=True, label_ratio=None, n_hop=2, 
+                max_degree=128, path_length=1, path_dropout=0.5, batch_size=512, small=True):
         """
         :param dataset_str:
         :param path:
@@ -118,10 +118,10 @@ class Graph(object):
 
         if dataset_str in ['cora', 'citeseer', 'pubmed'] and label_ratio is None:
             adj, features, y_train, y_val, y_test, train_mask, val_mask, test_mask, graph = load_data(dataset_str, path)
-        elif dataset_str in ['BlogCatalog', 'Flickr']:
+        elif dataset_str in ['cora', 'citeseer', 'pubmed']:
             adj, features, y_train, y_val, y_test, train_mask, val_mask, test_mask, graph = load_AN(dataset_str, path, ratio=label_ratio)
         else:
-            label_ratio = 0.2
+            # label_ratio = 0.01
             adj, features, y_train, y_val, y_test, train_mask, val_mask, test_mask, graph = load_amazon_ca(dataset_str, path, label_ratio=label_ratio)
 
         self.n_nodes, self.n_features = features.shape
@@ -160,11 +160,13 @@ class Graph(object):
         self.nodes_label = np.array([i for i in range(self.n_nodes) if train_mask[i]])
         self.nodes_unlabel = np.array([i for i in range(self.n_nodes) if not train_mask[i]])
         self.val_batch_num = 0
-        if dataset_str in ['cora', 'citeseer', 'pubmed'] and label_ratio is None:
+        if small:
+            print("====================================batch with small size of training data=====================================")
             self.batch_num = 0
             batch_size = self.n_nodes if batch_size == -1 else batch_size
             self.batch_size = batch_size - len(self.idx_train) # 每个batch都加入训练数据
         else:
+            print("====================================batch with large size of training data=====================================")
             self.batch_num_label = 0
             self.batch_num_unlabel = 0
             self.batch_size_label = int(np.round(batch_size * label_ratio))
@@ -217,7 +219,7 @@ class Graph(object):
         return self.batch_feed_dict(batch_nodes, placeholders, localSim)
 
     
-    def next_batch_feed_dict_v2(self, placeholders):
+    def next_batch_feed_dict_v2(self, placeholders, localSim=True):
 
         """
         适用于有标签的数据比较多的情况；
@@ -240,7 +242,7 @@ class Graph(object):
         batch_unlabel = self.nodes_unlabel[idx_start_unlabel:idx_end_unlabel]
         batch_nodes = np.concatenate([batch_label, batch_unlabel])
 
-        return self.batch_feed_dict(batch_nodes, placeholders, localSim=True) 
+        return self.batch_feed_dict(batch_nodes, placeholders, localSim=localSim) 
 
 
     def batch_feed_dict(self, nodes, placeholders, localSim):
@@ -704,14 +706,14 @@ class LinkGraph(object):
         elif dataset_str in ['BlogCatalog', 'Flickr', 'cora', 'citeseer', 'pubmed']:
             adj, features, y_train, y_val, y_test, train_mask, val_mask, test_mask, graph = load_AN(dataset_str, path, ratio=label_ratio)
         else:
-            label_ratio = 0.2
+            #label_ratio = 0.2
             adj, features, y_train, y_val, y_test, train_mask, val_mask, test_mask, graph = load_amazon_ca(dataset_str, path, label_ratio=label_ratio)
 
         self.n_nodes, self.n_features = features.shape
         self.n_classes = y_train.shape[1]
 
         # split edges into training, validation and test sets
-        adj_train, train_edges, val_edges, val_edges_false, test_edges, test_edges_false, graph = self.make_train_test_edges(adj, graph)
+        adj_train, train_edges, val_edges, val_edges_false, test_edges, test_edges_false, graph = self.mask_test_edges(adj)
         self.adj = adj_train.toarray()
         self.train_edges = train_edges
         self.val_edges = val_edges
@@ -739,7 +741,6 @@ class LinkGraph(object):
         self.idx_train = np.arange(self.n_nodes)[train_mask]
         self.idx_val = np.arange(self.n_nodes)[val_mask]
         self.idx_test = np.arange(self.n_nodes)[test_mask]
-    
         
         # settings for batch sampling
         self.batch_num = 0
@@ -856,81 +857,89 @@ class LinkGraph(object):
             return list(neighbors)
 
 
-    def make_train_test_edges(self, adj, graph, p_val=0.05, p_test=0.10):
-        """
-        adj is an adjacant matrix (scipy sparse matrix)
+    def mask_test_edges(self, adj, p_val=0.05, p_test=0.1):
+        # Function to build test set with 10% positive links
 
-        return adj_train, train_edges, val_edges, val_edges_false, test_edges, test_edges_false
-        adj_train : training adjacant matrix
-        train_edges : array indicating the training edges
-        val_edges : array indicating the validation edges
-        val_edge_false: array indicating the false edges in validation dataset
-        """
-        adj_row = adj.nonzero()[0]
-        adj_col = adj.nonzero()[1]
+        # Remove diagonal elements
+        adj = adj - sp.dia_matrix((adj.diagonal()[np.newaxis, :], [0]), shape=adj.shape)
+        adj.eliminate_zeros()
+        # Check that diag is zero:
+        assert np.diag(adj.todense()).sum() == 0
 
-        # get deges from adjacant matrix
-        edges = []
-        edges_dic = {}
-        for i in range(len(adj_row)):
-            edges.append([adj_row[i], adj_col[i]])
-            edges_dic[(adj_row[i], adj_col[i])] = 1
+        adj_triu = sp.triu(adj)
+        adj_tuple = sparse_to_tuple(adj_triu)
+        edges = adj_tuple[0]
+        edges_all = sparse_to_tuple(adj)[0]
+        num_test = int(np.floor(edges.shape[0] * p_test))
+        num_val = int(np.floor(edges.shape[0] * p_val))
 
-        # split the dataset into training,validation and test dataset
-        num_test = int(np.floor(len(edges) * p_test))
-        num_val = int(np.floor(len(edges) * p_val))
-        all_edge_idx = np.arange(len(edges))
+        all_edge_idx = range(edges.shape[0])
         np.random.shuffle(all_edge_idx)
         val_edge_idx = all_edge_idx[:num_val]
         test_edge_idx = all_edge_idx[num_val:(num_val + num_test)]
-        train_edge_idx = all_edge_idx[(num_val + num_test):]
+        test_edges = edges[test_edge_idx]
+        val_edges = edges[val_edge_idx]
+        train_edges = np.delete(edges, np.hstack([test_edge_idx, val_edge_idx]), axis=0)
 
-        edges = np.asarray(edges)
-        test_edges = edges[test_edge_idx]  # numpy array
-        val_edges = edges[val_edge_idx]  # numpy array
-        train_edges = edges[train_edge_idx]  # numpy array
-
-        for edge in val_edges:
-            graph[edge[0]].remove(edge[1])
-        for edge in test_edges:
-            graph[edge[0]].remove(edge[1])
+        def ismember(a, b, tol=5):
+            rows_close = np.all(np.round(a - b[:, None], tol) == 0, axis=-1)
+            return np.any(rows_close)
 
         test_edges_false = []
+        while len(test_edges_false) < len(test_edges):
+            idx_i = np.random.randint(0, adj.shape[0])
+            idx_j = np.random.randint(0, adj.shape[0])
+            if idx_i == idx_j:
+                continue
+            if ismember([idx_i, idx_j], edges_all):
+                continue
+            if test_edges_false:
+                if ismember([idx_j, idx_i], np.array(test_edges_false)):
+                    continue
+                if ismember([idx_i, idx_j], np.array(test_edges_false)):
+                    continue
+            test_edges_false.append([idx_i, idx_j])
+
         val_edges_false = []
-        false_edges_dic = {}
-        while len(test_edges_false) < num_test or len(val_edges_false) < num_val:
-            i = np.random.randint(0, adj.shape[0])
-            j = np.random.randint(0, adj.shape[0])
-            if (i, j) in edges_dic:
+        while len(val_edges_false) < len(val_edges):
+            idx_i = np.random.randint(0, adj.shape[0])
+            idx_j = np.random.randint(0, adj.shape[0])
+            if idx_i == idx_j:
                 continue
-            if (j, i) in edges_dic:
+            if ismember([idx_i, idx_j], train_edges):
                 continue
-            if (i, j) in false_edges_dic:
+            if ismember([idx_j, idx_i], train_edges):
                 continue
-            if (j, i) in false_edges_dic:
+            if ismember([idx_i, idx_j], val_edges):
                 continue
-            else:
-                false_edges_dic[(i, j)] = 1
-                false_edges_dic[(j, i)] = 1
+            if ismember([idx_j, idx_i], val_edges):
+                continue
+            if val_edges_false:
+                if ismember([idx_j, idx_i], np.array(val_edges_false)):
+                    continue
+                if ismember([idx_i, idx_j], np.array(val_edges_false)):
+                    continue
+            val_edges_false.append([idx_i, idx_j])
 
-            if np.random.random_sample() > 0.333:
-                if len(test_edges_false) < num_test:
-                    test_edges_false.append([i, j])
-                else:
-                    if len(val_edges_false) < num_val:
-                        val_edges_false.append([i, j])
-            else:
-                if len(val_edges_false) < num_val:
-                    val_edges_false.append([i, j])
-                else:
-                    if len(test_edges_false) < num_test:
-                        test_edges_false.append([i, j])
+        assert ~ismember(test_edges_false, edges_all)
+        assert ~ismember(val_edges_false, edges_all)
+        assert ~ismember(val_edges, train_edges)
+        assert ~ismember(test_edges, train_edges)
+        assert ~ismember(val_edges, test_edges)
 
-        val_edges_false = np.asarray(val_edges_false)
-        test_edges_false = np.asarray(test_edges_false)
-        data = np.ones(train_edges.shape[0], dtype=adj.dtype)
+        data = np.ones(train_edges.shape[0])
+
+        # Re-build adj matrix
         adj_train = sp.csr_matrix((data, (train_edges[:, 0], train_edges[:, 1])), shape=adj.shape)
-        # adj_train = adj_train + adj_train.T
+        adj_train = adj_train + adj_train.T
+
+        # build train graph
+        graph = defaultdict(list)
+        row, col = adj_train.nonzero()
+        for (i, j) in zip(row, col):
+            graph[i].append(j)
+
+        # NOTE: these edge lists only contain single direction of edge!
         return adj_train, train_edges, val_edges, val_edges_false, test_edges, test_edges_false, graph
 
 

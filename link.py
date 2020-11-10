@@ -36,11 +36,11 @@ flags.DEFINE_integer("feature_dim", 64, "dimension of transformed feature") # co
 flags.DEFINE_integer("n_samples", 1000, "number of samples of omega") # cora: 780; citeseer:1000; pubmed:1000; photo:1000; computers:1000
 flags.DEFINE_string("latent_layer_units", "[64, 64]", "") # cora: [64, 64]; citeseer:[64, 64]; pubmed:[64, 64]
 flags.DEFINE_float("lambda1", 0.001, " ")
-flags.DEFINE_float("lambda2", 1.5, " ")  # cora: 1e-4; citeseer:1e-4; pubmed:1e-4;
+flags.DEFINE_float("lambda2", 5, " ")  # cora: 1e-4; citeseer:1e-4; pubmed:1e-4;
 
 flags.DEFINE_integer("batch_size", 512, "")
 flags.DEFINE_integer("val_batch_size", 256, "")
-flags.DEFINE_integer("steps", 1500, "steps of optimization")
+flags.DEFINE_integer("steps", 1000, "steps of optimization")
 flags.DEFINE_integer("pretrain_step", 100, " ") # cora: 100; citeseer:100; pubmed:100; photo:500; computers:500
 flags.DEFINE_float("dropout", 0.5, "")  
 flags.DEFINE_float("weight_decay", 5e-4, "")
@@ -209,7 +209,7 @@ def train_iterative(graph, placeholders, model, sess, saver, model_path):
         
         train_feed_dict = graph.next_batch_feed_dict(placeholders)
     
-        sess.run(model.opt_step_e, feed_dict = train_feed_dict)
+        # sess.run(model.opt_step_e, feed_dict = train_feed_dict)
 
         """
         logits = sess.run(model.logits, feed_dict=train_feed_dict)

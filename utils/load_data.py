@@ -167,64 +167,12 @@ def read_label(labels, n_train):
         label_list.append(l)
         idx += 1
 
-    num_nodes = idx
-    num_label = len(np.unique(label_list))
-
     if np.min(label_list) > 0:
         label_list = np.asarray(label_list) - 1  # -1 to let label start from 0
     else:
         label_list = np.asarray(label_list)
 
-    label_dict = defaultdict(list)  # used for train, val, test split
-    for i, l in enumerate(label_list):
-        label_dict[l].append(i)
-
-    all_label = np.zeros((num_nodes, num_label), dtype=np.float64)
-    for i in range(num_nodes):
-        all_label[i, label_list[i]] = 1.
-
-    # number of each class in test set
-    if isinstance(n_train, float):
-        num_train = num_nodes * n_train
-    num_val = 500
-    num_test = 1000
-    num_train_dict = {}
-    num_val_dict = {}
-    num_test_dict = {}
-
-    for k, v in label_dict.items():
-        label_ratio = len(v) / num_nodes
-        if isinstance(n_train, float):
-            num_train_dict[k] = int(np.round(num_train * label_ratio, 0))
-        else:
-            num_train_dict[k] = n_train
-
-        num_val_dict[k] = int(np.round(num_val * label_ratio, 0))
-        num_test_dict[k] = int(np.round(num_test * label_ratio, 0))
-
-    idx_train = []
-    idx_val = []
-    idx_test = []
-    for l in range(num_label):
-        node_index = np.random.permutation(label_dict[l])
-        idx_train.extend(node_index[:num_train_dict[l]])
-        idx_val.extend(node_index[num_train_dict[l]:num_train_dict[l]+num_val_dict[l]])
-        idx_test.extend(node_index[-num_test_dict[l]:])
-
-    idx_train = np.sort(idx_train)
-    idx_val = np.sort(idx_val)
-    idx_test = np.sort(idx_test)
-
-    train_mask = sample_mask(idx_train, all_label.shape[0])
-    val_mask = sample_mask(idx_val, all_label.shape[0])
-    test_mask = sample_mask(idx_test, all_label.shape[0])
-
-    y_train = np.zeros(all_label.shape)
-    y_val = np.zeros(all_label.shape)
-    y_test = np.zeros(all_label.shape)
-    y_train[train_mask, :] = all_label[train_mask, :]
-    y_val[val_mask, :] = all_label[val_mask, :]
-    y_test[test_mask, :] = all_label[test_mask, :]
+    y_train, y_val, y_test, train_mask, val_mask, test_mask = split_data_label(label_list, n_train)
 
     return y_train, y_val, y_test, train_mask, val_mask, test_mask
 
@@ -280,7 +228,7 @@ def read_label_v2(labels, n_train):
     return y_train, y_val, y_test, train_mask, val_mask, test_mask
 
 
-def load_AN(dataset, path, ratio=20):
+def load_AN(dataset, path, ratio=0.2):
 
     # ratio: integer or float
 
@@ -446,6 +394,19 @@ def load_npz_to_sparse_graph(file_name):
 
     return adj_matrix, attr_matrix, labels
 
+def load_Flickr(path):
+
+    with np.load("{}/Flickr/adj_full.npz".format(path), allow_pickle=True) as loader:
+        adj = sp.csr_matrix((loader['data'], loader['indices'], loader['indptr']), shape=loader['shape'], dtype=np.float32)
+
+    attribute = sp.csr_matrix(np.load("{}/Flickr/feats.npy".format(path)))
+
+    class_map = json.load(open("{}/Flickr/class_map.json".format(path), mode='r'))
+    class_map = {int(k):v for k,v in class_map.items()}
+    labels = [class_map[i] for i in range(len(class_map))]
+
+    return adj, attribute, labels
+
 
 def split_data_label(labels, train_ratio):
     
@@ -518,8 +479,14 @@ def load_amazon_ca(dataset_str, path, label_ratio=0.2):
     else:
         filename = None
     
-    adj, attribute, labels = load_npz_to_sparse_graph("{}/{}/{}".format(path, dataset_str, filename))
-    adj = adj + adj.T
+    if dataset_str in ["computers", "photo", "cs", "phy"]:
+        adj, attribute, labels = load_npz_to_sparse_graph("{}/{}/{}".format(path, dataset_str, filename))
+        adj = adj + adj.T
+        print("============= successfully load {} data with label ratio: {}================".format(dataset_str, label_ratio))
+    elif dataset_str == "Flickr":
+        adj, attribute, labels = load_Flickr(path)
+        adj = adj + adj.T
+        print("=============successfully load Flickr data with label ratio: {}=============".format(label_ratio))
 
     graph = defaultdict(list)
     row, col = adj.nonzero()

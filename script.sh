@@ -30,4 +30,4 @@ python link.py --dataset cora
 python link.py --dataset citeseer --batch_size 256
 python link.py --dataset photo --pretrain_step 500
 python link.py --dataset computers --pretrain_step 500
-python link.py --dataset pubmed --pretrain_step 500 --label_ratio 0.2
+python link.py --dataset pubmed --batch_size 2000 --steps 2000 --lambda2 10.0

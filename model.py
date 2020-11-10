@@ -39,7 +39,7 @@ class StructAwareGP(object):
         self.batch = placeholders['nodes']
         self.Y = placeholders['Y']
         self.label_mask = placeholders['label_mask']
-        self.localSim = placeholders['localSim']
+        # self.localSim = placeholders['localSim']
         # self.globalSim = placeholders['globalSim']
         self.batch_size = placeholders["batch_size"]
 
@@ -69,7 +69,7 @@ class StructAwareGP(object):
             if self.transform_feature:
                 self.feature_dim = feature_dim
                 """
-                hidden_layers = NeuralNet(self.input_dim, [self.feature_dim, self.feature_dim], self.dropout, self.act)
+                hidden_layers = NeuralNet(self.input_dim, [self.feature_dim*2, self.feature_dim], self.dropout, self.act)
                 self.feature = hidden_layers(tf.nn.embedding_lookup(self.input_features, self.batch))
                 """
                 # trans_input_features = NeuralNet(self.input_dim, [256])(self.input_features)
@@ -86,7 +86,7 @@ class StructAwareGP(object):
             # self.implicitkernelnet = InferenceNet(1, self.feature_dim, [32], dropout=0.0, act=self.act)
             self.implicitkernelnet = InferenceNet(1, self.feature_dim, self.latent_layer_units, dropout=self.dropout, act=self.act)
             
-            self.context_weight = glorot([self.n_samples, self.n_samples])
+            # self.context_weight = glorot([self.n_samples, self.n_samples])
             #self.Omega_mu = glorot([1, self.feature_dim])
             #self.Omega_logstd = glorot([1, self.feature_dim])
         
@@ -189,6 +189,7 @@ class StructAwareGP(object):
         sim_label = -1 * tf.reduce_mean(tf.math.log(1e-6 + tf.nn.sigmoid(pos))) - tf.reduce_mean(tf.math.log(1e-6 + tf.nn.sigmoid(-1 * neg)))
         """
 
+        """
         self.context = tf.matmul(self.kernelfeatures, self.context_weight)
         sim_contex = tf.matmul(self.kernelfeatures, self.context, transpose_b=True)
         mask_not_neighbor = tf.equal(self.localSim, 0.0)
@@ -205,6 +206,7 @@ class StructAwareGP(object):
 
         # self.sim = self.lambda1 * sim_label + self.lambda2 * sim_neighbor
         self.sim = self.lambda2 * sim_neighbor
+        """
 
         """
         self.sim = self.lambda1 * sim_label
@@ -230,8 +232,8 @@ class StructAwareGP(object):
         # ====================================================================================
 
         # self.loss = self.reconstruct_loss + self.kl - self.sim + self.l2_loss
-        self.loss = self.reconstruct_loss + self.kl + self.sim + self.l2_loss
-        # self.loss = self.reconstruct_loss + self.kl + self.l2_loss
+        # self.loss = self.reconstruct_loss + self.kl + self.sim + self.l2_loss
+        self.loss = self.reconstruct_loss + self.kl + self.l2_loss
         
         # ============================ joint updating ========================================
         
@@ -243,8 +245,8 @@ class StructAwareGP(object):
 
         self.loss_e = self.reconstruct_loss + self.kl + self.l2_loss
         # self.loss_m = self.reconstruct_loss - self.sim + self.l2_loss
-        self.loss_m = self.reconstruct_loss + self.sim + self.l2_loss
-        # self.loss_m = self.reconstruct_loss + self.l2_loss
+        # self.loss_m = self.reconstruct_loss + self.sim + self.l2_loss
+        self.loss_m = self.reconstruct_loss + self.l2_loss
 
 
         self.optimizer_e = tf.train.AdamOptimizer(self.lr)
@@ -302,6 +304,266 @@ class StructAwareGP(object):
         support_mean_features = tf.concat(supprot_mean_feature_list, axis=0)
 
         return support_mean_features
+
+
+
+
+class StructAwareGP(object):
+
+    def __init__(self, placeholders, input_features, feature_dim, n_samples, latent_layer_units, output_dim,
+                transform_feature=False, node_neighbors=None, linear_layer=False, lambda1=1.0, lambda2 = 1.0, sample_size=5,
+                dropout=0., bias=False, act=tf.nn.relu, weight_decay=0.0, lr=0.001, name="sagp", 
+                n_neighbors=10, node_neighbors_neg=None, typ="class", **kwargs):
+        """
+        feature_dim: dimension of transformed feature, only used when transform_feture is True
+        """
+        super(StructAwareGP, self).__init__(**kwargs)
+
+        self.batch = placeholders['nodes']
+        self.Y = placeholders['Y']
+        self.label_mask = placeholders['label_mask']
+        # self.localSim = placeholders['localSim']
+        # self.globalSim = placeholders['globalSim']
+        self.batch_size = placeholders["batch_size"]
+
+        self.input_dim = input_features.shape[1]
+        self.n_classes = placeholders['Y'].get_shape().as_list()[1]
+
+        self.input_features = input_features
+        self.n_samples = n_samples
+        self.latent_layer_units = latent_layer_units
+        self.output_dim = output_dim
+
+        self.transform_feature = transform_feature
+        self.linear_layer = linear_layer
+
+        self.lambda1 = lambda1
+        self.lambda2 = lambda2 
+        self.sample_size = sample_size
+        self.dropout = dropout
+        self.act = act 
+        self.weight_decay = weight_decay
+        self.lr = lr
+        self.typ = typ
+
+        # feature learning
+        with tf.variable_scope("feature_mapping"):
+
+            if self.transform_feature:
+                self.feature_dim = feature_dim
+                """
+                hidden_layers = NeuralNet(self.input_dim, [self.feature_dim*2, self.feature_dim], self.dropout, self.act)
+                self.feature = hidden_layers(tf.nn.embedding_lookup(self.input_features, self.batch))
+                """
+                # trans_input_features = NeuralNet(self.input_dim, [256])(self.input_features)
+                self.feature = GraphConvolution(self.input_features, node_neighbors, [self.feature_dim*2, self.feature_dim], [25, 20], self.batch_size,
+                                                dropout=self.dropout, act=self.act)(self.batch)
+            else:
+                self.feature_dim = self.input_dim
+                self.feature = Constant(self.input_dim)(tf.nn.embedding_lookup(self.input_features, self.batch))
+        
+
+        # random Fourier feature
+        with tf.variable_scope("ImplicitKernelNet"):
+
+            # self.implicitkernelnet = InferenceNet(1, self.feature_dim, [32], dropout=0.0, act=self.act)
+            self.implicitkernelnet = InferenceNet(1, self.feature_dim, self.latent_layer_units, dropout=self.dropout, act=self.act)
+            
+            # self.context_weight = glorot([self.n_samples, self.n_samples])
+            #self.Omega_mu = glorot([1, self.feature_dim])
+            #self.Omega_logstd = glorot([1, self.feature_dim])
+        
+        self.epsilon = np.random.normal(0.0, 1.0, [self.n_samples, 1]).astype(np.float32)
+        # self.epsilon = tf.random.normal(shape=[self.n_samples, 1], dtype=tf.float32)
+        self.eps = np.random.normal(0.0, 1.0, [self.sample_size, self.n_samples, self.feature_dim]).astype(np.float32)
+        # self.eps = np.random.normal(0.0, 1.0, [self.n_samples, self.feature_dim]).astype(np.float32)
+        self.b = np.random.uniform(0.0, 2*np.pi, [1, self.n_samples]).astype(np.float32)
+
+        # Bayesian linear regression
+        with tf.variable_scope("posterior"):
+            # self.posterior = InferenceNet(self.feature_dim, self.n_samples*self.output_dim, latent_layer_units, dropout=self.dropout, act=self.act)
+            # self.posterior = InferenceNet(self.feature_dim + self.n_classes, self.n_samples, latent_layer_units, dropout=self.dropout, act=self.act)
+
+            self.W_mu = glorot([self.n_classes, self.n_samples], name='out_weights_mu')
+            self.W_logstd = glorot([self.n_classes, self.n_samples], name='out_weights_logstd')
+
+        """
+        if self.linear_layer:
+            # self.W = glorot([output_dim, self.n_classes])
+            self.linear_W = glorot([self.output_dim, self.n_classes])
+        else:
+            self.linear_W = tf.eye(self.n_classes)
+        """
+
+        self._build_graph()
+    
+
+    def _build_graph(self):
+
+        # self.feature = self.feature_layer(self.batch)
+
+        # obtain implicit random features
+        Omega_mu, Omega_logstd = self.implicitkernelnet(self.epsilon) # n_samples, feature_dim
+        # print(Omega_mu)
+        # print(Omega_logstd)
+        Omega = Omega_mu + self.eps * tf.math.exp(Omega_logstd)  # sample_size, n_samples, feature_dim
+        self.Omega = tf.reduce_mean(Omega, axis=0)
+        # self.Omega = Omega
+
+        transform = tf.matmul(self.feature, self.Omega, transpose_b=True) # N, n_samples
+        transform = np.sqrt(2. / self.n_samples) * tf.math.cos(2*np.pi*transform + self.b)
+        self.kernelfeatures = tf.cast(transform, tf.float32)
+
+
+        # obtain parameters of the linear mapping
+        """
+        feature_class = self.get_feature_label(self.feature)  # n_classes, feature_dim + n_classes
+        self.W_mu, self.W_logstd = self.posterior(feature_class)  # n_classes, n_samples
+        """
+        u = np.random.normal(0.0, 1.0, [self.sample_size, self.n_classes, self.n_samples])
+        W = self.W_mu + u * tf.math.exp(self.W_logstd)
+        W = tf.reduce_mean(W, axis=0)
+
+        output = tf.matmul(self.kernelfeatures, W, transpose_b=True)
+
+        """
+        self.W_mu, self.W_logstd = self.posterior(tf.reduce_mean(self.feature, axis=0, keepdims=True))
+        self.W_mu = tf.reshape(tf.squeeze(self.W_mu, [0]), [self.n_samples, self.output_dim])
+        self.W_logstd = tf.reshape(tf.squeeze(self.W_logstd, [0]), [self.n_samples, self.output_dim])
+        
+        u = np.random.normal(0.0, 1.0, [self.n_samples, self.output_dim])
+        W = self.W_mu + u * tf.math.exp(self.W_logstd)
+
+        output = tf.matmul(self.kernelfeatures, W)
+        """
+
+        # self.logits = tf.matmul(output, self.linear_W)
+        self.logits = output
+
+        # ============================= construct loss =====================================
+
+        self.reconstruct_loss = masked_softmax_cross_entropy(self.logits, self.Y, self.label_mask)
+
+        scale = 1. / tf.cast(tf.reduce_sum(self.label_mask), tf.float32)
+        self.kl = scale * self.obtain_prior_KL()
+
+        """
+        featureSim = tf.matmul(self.kernelfeatures, self.kernelfeatures, transpose_b=True)
+        # self.sim = self.lambda1 * tf.reduce_mean(tf.multiply(featureSim, self.localSim + 0.001)) + self.lambda2 * tf.reduce_mean(tf.multiply(featureSim, self.globalSim))
+
+        # self.sim = self.lambda1 * tf.nn.l2_loss(featureSim - self.localSim) + self.lambda2 * tf.nn.l2_loss(featureSim - self.globalSim)
+        # f = lambda x: tf.reduce_sum(tf.reduce_mean(tf.square(x), axis=1))
+        f = lambda x: tf.reduce_mean(tf.square(x))
+        self.sim = self.lambda1 * f(featureSim - self.localSim) + self.lambda2 * f(featureSim - self.globalSim)
+        """
+
+        """
+        kernelfeatures_label = tf.boolean_mask(self.kernelfeatures, self.label_mask)
+        label = tf.boolean_mask(self.Y, self.label_mask)
+
+        # sim_contex = tf.matmul(kernelfeatures_label, kernelfeatures_label, transpose_b=True) # n_label, n_label
+        context = tf.matmul(kernelfeatures_label, self.context_weight)
+        sim_contex = tf.matmul(kernelfeatures_label, context, transpose_b=True) # n_label, n_label
+        
+        mask_label = tf.cast(tf.matmul(label, label, transpose_b=True), tf.bool)
+        pos = tf.boolean_mask(sim_contex, mask_label)
+        neg = tf.boolean_mask(sim_contex, tf.math.logical_not(mask_label))
+        # scale_neg = tf.cast(tf.shape(neg)[0], tf.float32) / tf.cast(tf.shape(pos)[0], tf.float32)
+        sim_label = -1 * tf.reduce_mean(tf.math.log(1e-6 + tf.nn.sigmoid(pos))) - tf.reduce_mean(tf.math.log(1e-6 + tf.nn.sigmoid(-1 * neg)))
+        """
+
+        """
+        self.context = tf.matmul(self.kernelfeatures, self.context_weight)
+        sim_contex = tf.matmul(self.kernelfeatures, self.context, transpose_b=True)
+        mask_not_neighbor = tf.equal(self.localSim, 0.0)
+        # pos_neighbor = tf.boolean_mask(sim_contex, tf.math.logical_not(mask_not_neighbor))
+        # neg_neighbor = tf.boolean_mask(sim_contex, mask_not_neighbor)
+        if self.typ == "class":
+            print("===============================classification dropout=====================================")
+            pos_neighbor = tf.nn.dropout(tf.boolean_mask(sim_contex, tf.math.logical_not(mask_not_neighbor)), keep_prob=0.5)
+            neg_neighbor = tf.nn.dropout(tf.boolean_mask(sim_contex, mask_not_neighbor), keep_prob=0.5)
+        else:
+            pos_neighbor = tf.nn.dropout(tf.boolean_mask(sim_contex, tf.math.logical_not(mask_not_neighbor)), keep_prob=0.8)
+            neg_neighbor = tf.nn.dropout(tf.boolean_mask(sim_contex, mask_not_neighbor), keep_prob=0.8)
+        sim_neighbor = -1 * tf.reduce_mean(tf.math.log(1e-6 + tf.nn.sigmoid(pos_neighbor))) - tf.reduce_mean(tf.math.log(1e-6 + tf.nn.sigmoid(-1 * neg_neighbor)))
+
+        # self.sim = self.lambda1 * sim_label + self.lambda2 * sim_neighbor
+        self.sim = self.lambda2 * sim_neighbor
+        """
+
+        """
+        self.sim = self.lambda1 * sim_label
+        """
+        """
+        featureSim_label = tf.boolean_mask(tf.boolean_mask(featureSim, self.label_mask), self.label_mask, axis=1)
+        Y_label =tf.boolean_mask(self.Y, self.label_mask)
+        labelSim = tf.matmul(Y_label, Y_label, transpose_b=True)
+        self.sim_label = 0.001 * tf.reduce_mean(tf.multiply(featureSim_label, labelSim))
+        """
+
+        # l2_loss = tf.nn.l2_loss(self.feature_layer.get_vars()[0])
+        fm_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="feature_mapping")
+        kn_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="ImplicitKernelNet")
+        ps_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="posterior")
+        tf_vars = fm_vars + kn_vars
+
+        l2_loss = 0
+        for var in tf_vars:
+            l2_loss += tf.nn.l2_loss(var)
+        self.l2_loss = self.weight_decay * l2_loss
+
+        # ====================================================================================
+
+        # self.loss = self.reconstruct_loss + self.kl - self.sim + self.l2_loss
+        # self.loss = self.reconstruct_loss + self.kl + self.sim + self.l2_loss
+        self.loss = self.reconstruct_loss + self.kl + self.l2_loss
+        
+        # ============================ joint updating ========================================
+        
+        self.opt_step = tf.train.AdamOptimizer(self.lr).minimize(self.loss)
+
+        #======================================================================================
+
+        # ============================== iterative updating ==================================
+
+        self.loss_e = self.reconstruct_loss + self.kl + self.l2_loss
+        # self.loss_m = self.reconstruct_loss - self.sim + self.l2_loss
+        # self.loss_m = self.reconstruct_loss + self.sim + self.l2_loss
+        self.loss_m = self.reconstruct_loss + self.l2_loss
+
+
+        self.optimizer_e = tf.train.AdamOptimizer(self.lr)
+        grads_and_vars_e = self.optimizer_e.compute_gradients(self.loss_e, var_list= fm_vars+ ps_vars)
+        clipped_grads_and_vars_e = [(tf.clip_by_value(grad, -5.0, 5.0) if grad is not None else None, var) 
+                                    for grad, var in grads_and_vars_e]
+        self.opt_step_e = self.optimizer_e.apply_gradients(clipped_grads_and_vars_e)
+
+        self.optimizer_m = tf.train.AdamOptimizer(self.lr)
+        grads_and_vars_m = self.optimizer_m.compute_gradients(self.loss_m, var_list= fm_vars + kn_vars)
+        clipped_grads_and_vars_m = [(tf.clip_by_value(grad, -5.0, 5.0) if grad is not None else None, var) 
+                                    for grad, var in grads_and_vars_m]
+        self.opt_step_m = self.optimizer_m.apply_gradients(clipped_grads_and_vars_m)
+
+        # self.opt_step_kernel = tf.train.AdamOptimizer(self.lr).minimize(self.sim, var_list= kn_vars)
+        #=====================================================================================
+
+        # accuracy
+        self.accuracy = masked_accuracy(self.logits, self.Y, self.label_mask)
+
+
+
+    def set_lambda(self, lambda1, lambda2):
+        self.lambda1 = lambda1
+        self.lambda2 = lambda2
+
+    def obtain_prior_KL(self):
+        # return KL divergence of W
+
+        return 0.5 * tf.reduce_mean(tf.reduce_sum(tf.math.square(self.W_mu) + tf.math.square(tf.math.exp(self.W_logstd)) \
+                                    - 2*self.W_logstd - 1, axis=1))
+
+        
+
 
 
 class StructAwareGP_Inductive(object):

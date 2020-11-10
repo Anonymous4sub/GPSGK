@@ -54,6 +54,21 @@ flags.DEFINE_string("exp_name", "default_experiment", "experiment name")
 
 # parameter config
 label_ratio = eval(FLAGS.label_ratio)
+if FLAGS.dataset not in ["cora", "pubmed", "citeseer"]:
+    label_ratio = 0.2
+
+if FLAGS.dataset in ["cora", "pubmed", "citeseer"]:
+    if label_ratio is None:
+        small = True
+    elif label_ratio<0.05: # CORA的话：0.15
+        small = True
+    else:
+        small = False
+else:
+    if label_ratio < 0.05: 
+        small = True
+    else:
+        small = False
 
 transform = eval(FLAGS.transform)
 latent_layer_units = eval(FLAGS.latent_layer_units)
@@ -91,7 +106,7 @@ def load_data():
 
     # load data
     graph = Graph(FLAGS.dataset, FLAGS.data_path, label_ratio=label_ratio, n_hop=FLAGS.n_hop, max_degree=FLAGS.max_degree,
-                    path_length=FLAGS.path_length, path_dropout=FLAGS.path_dropout, batch_size=FLAGS.batch_size)
+                    path_length=FLAGS.path_length, path_dropout=FLAGS.path_dropout, batch_size=FLAGS.batch_size, small=small)
     tf.logging.info("dataset:{}, num nodes:{}, num features:{}".format(FLAGS.dataset, graph.n_nodes, graph.n_features))
 
     return graph
@@ -123,14 +138,18 @@ def get_psudo_label(logits, label_true, label_mask, tau=0.0):
 def evaluate(graph, placeholders, model, sess, test=False):
 
     feed_dict_val = graph.val_batch_feed_dict(placeholders, FLAGS.val_batch_size, test=test)
+    losses = []
+    llh_losses = []
     acc_val = []
 
     while feed_dict_val is not None:
-        accuracy_val = sess.run([model.accuracy], feed_dict=feed_dict_val)
-        acc_val.append(accuracy_val[0])
+        loss_val, llh_loss_val, accuracy_val = sess.run([model.loss, model.reconstruct_loss, model.accuracy], feed_dict=feed_dict_val)
+        losses.append(loss_val)
+        llh_losses.append(llh_loss_val)
+        acc_val.append(accuracy_val)
         feed_dict_val = graph.val_batch_feed_dict(placeholders, FLAGS.val_batch_size)
     
-    return np.mean(acc_val)
+    return np.mean(losses), np.mean(llh_losses), np.mean(acc_val)
 
 def pretrain_kernel(graph, placeholders, model, sess):
 
@@ -145,7 +164,7 @@ def pretrain_kernel(graph, placeholders, model, sess):
 
 def pretrain(graph, placeholders, model, sess):
 
-    if FLAGS.dataset in ["cora", "citeseer", "pubmed"] and FLAGS.label_ratio is not None:
+    if small:
         batch_dict = graph.next_batch_feed_dict
     else:
         batch_dict = graph.next_batch_feed_dict_v2
@@ -165,7 +184,7 @@ def train_iterative(graph, placeholders, model, sess, saver, model_path):
     # cost_val = []
     max_acc_val = 0.0
 
-    if FLAGS.dataset in ["cora", "citeseer", "pubmed"] and FLAGS.label_ratio is not None:
+    if small:
         batch_dict = graph.next_batch_feed_dict
     else:
         batch_dict = graph.next_batch_feed_dict_v2
@@ -175,21 +194,25 @@ def train_iterative(graph, placeholders, model, sess, saver, model_path):
         train_feed_dict = batch_dict(placeholders)
     
         sess.run(model.opt_step_e, feed_dict = train_feed_dict)
-
+        """
         logits = sess.run(model.logits, feed_dict=train_feed_dict)
         psudo_label, mask = get_psudo_label(logits, train_feed_dict[placeholders["Y"]], train_feed_dict[placeholders["label_mask"]], FLAGS.tau)
         train_feed_dict[placeholders["Y"]] = psudo_label
         train_feed_dict[placeholders["label_mask"]] = mask
-
+        """
         sess.run(model.opt_step_m, feed_dict = train_feed_dict)
 
+        """
         loss_train, re_loss, kl, sim, acc_train_value = sess.run([model.loss, model.reconstruct_loss, 
                                         model.kl, model.sim, model.accuracy], feed_dict=train_feed_dict)
+        """
+        sim = 0.0
+        loss_train, re_loss, kl, acc_train_value = sess.run([model.loss, model.reconstruct_loss, model.kl, model.accuracy], feed_dict=train_feed_dict)
 
         if i % 5 == 0 or i == FLAGS.steps - 1:
 
-            print("Epoch: {}".format(i+1), "loss: {:.5f}".format(loss_train), "llh_loss: {:.5f}".format(re_loss),
-              "kl: {:.5f}".format(kl), "sim: {:.5f}".format(sim), "accuracy: {:.5f}".format(acc_train_value), end=", ")
+            print("Epoch {}: ".format(i+1), "loss: {:.5f}, ".format(loss_train), "llh_loss: {:.5f}, ".format(re_loss),
+              "kl: {:.5f}, ".format(kl), "sim: {:.5f}, ".format(sim), "Accuracy: {:.5f}".format(acc_train_value), end=", ")
 
             """
             feed_dict_val = graph.val_batch_feed_dict(placeholders, FLAGS.val_batch_size)
@@ -200,7 +223,7 @@ def train_iterative(graph, placeholders, model, sess, saver, model_path):
                 feed_dict_val = graph.val_batch_feed_dict(placeholders, FLAGS.val_batch_size)
             # print(acc_val)
             """
-            acc_val = evaluate(graph, placeholders, model, sess)
+            loss_val, llh_loss_val, acc_val = evaluate(graph, placeholders, model, sess)
             print("Accuracy_val: {:.5f}".format(acc_val), end=", ")
 
             """
@@ -212,12 +235,12 @@ def train_iterative(graph, placeholders, model, sess, saver, model_path):
                 feed_dict_test = graph.val_batch_feed_dict(placeholders, FLAGS.val_batch_size, test=True)
             # print(acc_test)
             """
-            acc_test = evaluate(graph, placeholders, model, sess, test=True)
-            print("Accuracy_test: {:.5f}".format(acc_test))
-            if acc_test > max_acc_val:
+            loss_test, llh_loss_test, acc_test = evaluate(graph, placeholders, model, sess, test=True)
+            print("loss_test: {:.5f}, llh_loss_test: {:.5f}, Accuracy_test: {:.5f}".format(loss_test, llh_loss_test, acc_test))
+            if acc_val > max_acc_val:
                 save_path = saver.save(sess, "{}/model_best.ckpt".format(model_path), global_step=i)
                 print("=================successfully save the model at: {}=======================".format(save_path))
-                max_acc_val = acc_test
+                max_acc_val = acc_val
         
 
 
@@ -312,8 +335,8 @@ if __name__ == "__main__":
 
     for i in range(20):
 
-        acc_val = evaluate(graph, placeholders, model, sess)
-        acc_test = evaluate(graph, placeholders, model, sess, test=True)
+        _, _, acc_val = evaluate(graph, placeholders, model, sess)
+        _, _, acc_test = evaluate(graph, placeholders, model, sess, test=True)
 
         acc_val_list.append(acc_val)
         acc_test_list.append(acc_test)
