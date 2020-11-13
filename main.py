@@ -51,6 +51,9 @@ flags.DEFINE_string("linear_layer", "False", "")
 flags.DEFINE_integer("output_dim", 16, "number of latent functions, only used when linear_layer is True")
 flags.DEFINE_string("exp_name", "default_experiment", "experiment name")
 
+flags.DEFINE_bool("plot", False, "whether to save embeddings")
+#flags.DEFINE_bool("la", True, "whether to use label augmentation")
+
 
 # parameter config
 label_ratio = eval(FLAGS.label_ratio)
@@ -194,22 +197,26 @@ def train_iterative(graph, placeholders, model, sess, saver, model_path):
         train_feed_dict = batch_dict(placeholders)
     
         sess.run(model.opt_step_e, feed_dict = train_feed_dict)
-        """
+        
+        #if FLAGS.la:
+        
+        # print("+++++++++++++++++++++++++++ LA ++++++++++++++++++++++++++++++++")
         logits = sess.run(model.logits, feed_dict=train_feed_dict)
         psudo_label, mask = get_psudo_label(logits, train_feed_dict[placeholders["Y"]], train_feed_dict[placeholders["label_mask"]], FLAGS.tau)
         train_feed_dict[placeholders["Y"]] = psudo_label
         train_feed_dict[placeholders["label_mask"]] = mask
-        """
+        
         sess.run(model.opt_step_m, feed_dict = train_feed_dict)
 
         """
         loss_train, re_loss, kl, sim, acc_train_value = sess.run([model.loss, model.reconstruct_loss, 
                                         model.kl, model.sim, model.accuracy], feed_dict=train_feed_dict)
         """
-        sim = 0.0
-        loss_train, re_loss, kl, acc_train_value = sess.run([model.loss, model.reconstruct_loss, model.kl, model.accuracy], feed_dict=train_feed_dict)
-
+        
         if i % 5 == 0 or i == FLAGS.steps - 1:
+
+            sim = 0.0
+            loss_train, re_loss, kl, acc_train_value = sess.run([model.loss, model.reconstruct_loss, model.kl, model.accuracy], feed_dict=train_feed_dict)
 
             print("Epoch {}: ".format(i+1), "loss: {:.5f}, ".format(loss_train), "llh_loss: {:.5f}, ".format(re_loss),
               "kl: {:.5f}, ".format(kl), "sim: {:.5f}, ".format(sim), "Accuracy: {:.5f}".format(acc_train_value), end=", ")
@@ -244,40 +251,38 @@ def train_iterative(graph, placeholders, model, sess, saver, model_path):
         
 
 
-def train(graph, placeholders, model, sess):
+def train(graph, placeholders, model, sess, saver, model_path):
 
+    max_acc_val = 0.0
 
-    # construct feed_dict
-    feed_dict_val = graph.val_batch_feed_dict(placeholders)
-    feed_dict_test = graph.val_batch_feed_dict(placeholders, test=True)
+    if small:
+        batch_dict = graph.next_batch_feed_dict
+    else:
+        batch_dict = graph.next_batch_feed_dict_v2
 
     for i in range(FLAGS.steps):
+        
+        train_feed_dict = batch_dict(placeholders)
+    
+        sess.run(model.opt_step, feed_dict = train_feed_dict)
+        
+        if i % 5 == 0 or i == FLAGS.steps - 1:
 
-        t = time.time()
+            sim = 0.0
+            loss_train, re_loss, kl, acc_train_value = sess.run([model.loss, model.reconstruct_loss, model.kl, model.accuracy], feed_dict=train_feed_dict)
 
-        train_feed_dict = graph.next_batch_feed_dict(placeholders)
-        
-        _, loss_value, re_loss, kl, regular, acc_train_value = sess.run([model.opt_step, model.loss, model.reconstruct_loss, model.kl,
-                                                     model.sim, model.accuracy], feed_dict=train_feed_dict)
-        #_, loss_value, acc_train_value = sess.run([opt_step, model.loss, model.accuracy], feed_dict=feed_dict)
-        
-        print("Epoch: {}".format(i+1), "Loss: {:.5f}".format(loss_value), "llh_loss: {:.5f}".format(re_loss),
-              "kl: {:.5f}".format(kl), "regular: {:.5f}".format(regular), "accuracy: {:.5f}".format(acc_train_value), end=", ")
+            print("Epoch {}: ".format(i+1), "loss: {:.5f}, ".format(loss_train), "llh_loss: {:.5f}, ".format(re_loss),
+              "kl: {:.5f}, ".format(kl), "sim: {:.5f}, ".format(sim), "Accuracy: {:.5f}".format(acc_train_value), end=", ")
 
-        """
-        logits_val = model.predict_logits(graph.feature[graph.val_mask])
-        # print(logits_val)
-        logits_val_value = sess.run(logits_val, feed_dict={})
-        # print(logits_val_value)
-        accuracy_val = calculate_accuracy(logits_val_value, graph.y_val)
-        print("Accuracy_val: {:.5f}".format(accuracy_val))
-        """
-        
-        loss_val, accuracy_val = sess.run([model.loss, model.accuracy], feed_dict=feed_dict_val)
-        print("Loss_val :{:.5f}".format(loss_val), "Accuracy_val: {:.5f}".format(accuracy_val), end=", ")
-        
-        loss_test, accuracy_test = sess.run([model.loss, model.accuracy], feed_dict=feed_dict_test)
-        print("Loss_test :{:.5f}".format(loss_test), "Accuracy_test: {:.5f}".format(accuracy_test))
+            loss_val, llh_loss_val, acc_val = evaluate(graph, placeholders, model, sess)
+            print("Accuracy_val: {:.5f}".format(acc_val), end=", ")
+
+            loss_test, llh_loss_test, acc_test = evaluate(graph, placeholders, model, sess, test=True)
+            print("loss_test: {:.5f}, llh_loss_test: {:.5f}, Accuracy_test: {:.5f}".format(loss_test, llh_loss_test, acc_test))
+            if acc_val > max_acc_val:
+                save_path = saver.save(sess, "{}/model_best.ckpt".format(model_path), global_step=i)
+                print("=================successfully save the model at: {}=======================".format(save_path))
+                max_acc_val = acc_val
 
             
 
@@ -319,7 +324,7 @@ if __name__ == "__main__":
     os.mkdir(model_path)
     
     # train the model
-    # train(graph, placeholders, model, sess)
+    #train(graph, placeholders, model, sess, saver, model_path)
     # pretrain_kernel(graph, placeholders, model, sess)
     pretrain(graph, placeholders, model, sess)
     train_iterative(graph, placeholders, model, sess, saver, model_path)
@@ -347,4 +352,43 @@ if __name__ == "__main__":
     print("Accuracy_test: {:.5f}".format(np.max(acc_test_list)))
     print("===============================================")
 
+    if FLAGS.plot:
+
+        batch_num = 0
+        features=[]
+        outputs = []
+        logits = []
+        nodes = list(range(graph.n_nodes))
+
+        while(batch_num*FLAGS.val_batch_size<graph.n_nodes):
+        
+            idx_start = batch_num * FLAGS.val_batch_size
+            idx_end = min((batch_num+1)*FLAGS.val_batch_size, graph.n_nodes)
+            batch_nodes = nodes[idx_start:idx_end]
+            batch_size = len(batch_nodes)
+
+            feed_dict = {}
+            feed_dict.update({placeholders["nodes"]: batch_nodes})
+            feed_dict.update({placeholders['Y']: np.zeros((batch_size, graph.n_classes), dtype=np.float32)})
+            feed_dict.update({placeholders['label_mask']: np.zeros_like(batch_nodes, dtype=np.float32)})
+            feed_dict.update({placeholders["localSim"]: np.zeros((batch_size, batch_size), dtype=np.float32)})
+            feed_dict.update({placeholders["batch_size"]: batch_size})
+
+            feature, embedding, logit = sess.run([model.feature, model.kernelfeatures, model.logits], feed_dict=feed_dict)
+            outputs.append(embedding)
+            logits.append(logit)
+            features.append(feature)
+
+            batch_num += 1
+    
+        outputs = np.concatenate(outputs, axis=0)
+        logits = np.concatenate(logits, axis=0)
+        features = np.concatenate(features, axis=0)
+
+        print("====================================get feature: {}===========================".format(outputs.shape))
+        np.save("log/{}/{}_embedding.npy".format(FLAGS.dataset, FLAGS.dataset), outputs)
+        np.save("log/{}/{}_label.npy".format(FLAGS.dataset, FLAGS.dataset), graph.y_overall)
+        np.save("log/{}/{}_logits.npy".format(FLAGS.dataset, FLAGS.dataset), logits)
+        np.save("log/{}/{}_features.npy".format(FLAGS.dataset, FLAGS.dataset), features)
+        print("successfully save data!!!")
     

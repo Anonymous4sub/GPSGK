@@ -1,13 +1,15 @@
 
 import numpy as np
 
-file_name = "pubmed.out"
+
+### single out file ###
+file_name = "out/computers.out"
 
 file_content = open(file_name).readlines()
 
 idxs = []
 for i, line in enumerate(file_content):
-    if not line.startswith("Epoch: 1000"): continue
+    if not line.startswith("Epoch 1000:"): continue
     idxs.append(i)
 
 metrics = []
@@ -22,4 +24,6 @@ for idx in idxs:
     nums = [float(x.strip()) for x in arrays.split(",")]
     metrics.append(np.mean(nums))
 
-print(metrics)
+# print(metrics)
+for i in np.arange(0, len(metrics), 3):
+    print(metrics[i:i+3])

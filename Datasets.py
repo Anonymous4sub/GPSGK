@@ -713,7 +713,9 @@ class LinkGraph(object):
         self.n_classes = y_train.shape[1]
 
         # split edges into training, validation and test sets
-        adj_train, train_edges, val_edges, val_edges_false, test_edges, test_edges_false, graph = self.mask_test_edges(adj)
+        adj_train, train_edges, val_edges, val_edges_false, test_edges, test_edges_false, graph = self.make_train_test_edges(adj)
+        #adj_train, train_edges, val_edges, val_edges_false, test_edges, test_edges_false, graph = self.mask_test_edges(adj)
+        
         self.adj = adj_train.toarray()
         self.train_edges = train_edges
         self.val_edges = val_edges
@@ -741,7 +743,7 @@ class LinkGraph(object):
         self.idx_train = np.arange(self.n_nodes)[train_mask]
         self.idx_val = np.arange(self.n_nodes)[val_mask]
         self.idx_test = np.arange(self.n_nodes)[test_mask]
-        
+
         # settings for batch sampling
         self.batch_num = 0
         self.batch_size = batch_size
@@ -788,41 +790,38 @@ class LinkGraph(object):
         self.batch_num += 1
 
         batch_edges = self.train_edges[idx_start : idx_end]
-        batch_nodes = list()
-        batch_id = 0
-        batch_id_map = dict()
+        batch_pos1_edges = []
+        batch_pos2_edges = []
+        batch_neg1_edges = []
+        batch_neg2_edges = []
 
         for edge in batch_edges:
+            
+            batch_pos1_edges.append(edge[0])
+            batch_pos2_edges.append(edge[1])
+            i = np.random.randint(0, self.n_nodes)
+            j = np.random.randint(0, self.n_nodes)
+            while j in self.graph[i]:
+                i = np.random.randint(0, self.n_nodes)
+                j = np.random.randint(0, self.n_nodes)
+            batch_neg1_edges.append(i)
+            batch_neg2_edges.append(j)
 
-            if edge[0] not in batch_id_map:
-                batch_nodes.append(edge[0])
-                batch_id_map[edge[0]] = batch_id
-                batch_id += 1
-            if edge[1] not in batch_id_map:
-                batch_nodes.append(edge[1])
-                batch_id_map[edge[1]] = batch_id
-                batch_id += 1
-        
-        # 获取localSim
-        localSim = np.zeros((len(batch_nodes), len(batch_nodes)), dtype=np.float32)
-        for node in batch_nodes:
-            for neighbor in self.graph[node]:
-                if neighbor not in batch_id_map: continue
-                localSim[batch_id_map[node], batch_id_map[neighbor]] = 1.0        
+        data = (batch_pos1_edges, batch_pos2_edges, batch_neg1_edges, batch_neg2_edges)
 
-        return self.batch_feed_dict(batch_nodes, placeholders, localSim)
+        return self.batch_feed_dict(data, placeholders)
 
 
+    def batch_feed_dict(self, data, placeholders):
 
-    def batch_feed_dict(self, nodes, placeholders, localSim):
+        batch_pos1_edges, batch_pos2_edges, batch_neg1_edges, batch_neg2_edges = data 
 
         feed_dict = {}
-        
-        feed_dict.update({placeholders["nodes"]: nodes})
-        feed_dict.update({placeholders['Y']: self.y_train[nodes]})
-        feed_dict.update({placeholders['label_mask']: self.train_mask[nodes]})
-        feed_dict.update({placeholders['localSim']: self.adj[nodes][:, nodes]})
-        feed_dict.update({placeholders["batch_size"]: len(nodes)})
+        feed_dict.update({placeholders["pos1"]: batch_pos1_edges})
+        feed_dict.update({placeholders["pos2"]: batch_pos2_edges})
+        feed_dict.update({placeholders["neg1"]: batch_neg1_edges})
+        feed_dict.update({placeholders["neg2"]: batch_neg2_edges})
+        feed_dict.update({placeholders["batch_size"]: len(batch_pos1_edges)})
         
         return feed_dict
         
@@ -857,9 +856,97 @@ class LinkGraph(object):
             return list(neighbors)
 
 
+    def make_train_test_edges(self, adj, p_val=0.05, p_test=0.10):
+        """
+        adj is an adjacant matrix (scipy sparse matrix)
+
+        return adj_train, train_edges, val_edges, val_edges_false, test_edges, test_edges_false
+        adj_train : training adjacant matrix
+        train_edges : array indicating the training edges
+        val_edges : array indicating the validation edges
+        val_edge_false: array indicating the false edges in validation dataset
+        """
+        print("================================= randomly split edges ============================")
+
+        # Remove diagonal elements
+        adj = adj - sp.dia_matrix((adj.diagonal()[np.newaxis, :], [0]), shape=adj.shape)
+        adj.eliminate_zeros()
+
+        adj_row = adj.nonzero()[0]
+        adj_col = adj.nonzero()[1]
+
+        # get deges from adjacant matrix
+        edges = []
+        edges_dic = {}
+        for i in range(len(adj_row)):
+            edges.append([adj_row[i], adj_col[i]])
+            edges_dic[(adj_row[i], adj_col[i])] = 1
+
+        # split the dataset into training,validation and test dataset
+        num_test = int(np.floor(len(edges) * p_test))
+        num_val = int(np.floor(len(edges) * p_val))
+        all_edge_idx = np.arange(len(edges))
+        np.random.shuffle(all_edge_idx)
+        val_edge_idx = all_edge_idx[:num_val]
+        test_edge_idx = all_edge_idx[num_val:(num_val + num_test)]
+        train_edge_idx = all_edge_idx[(num_val + num_test):]
+
+        edges = np.asarray(edges)
+        test_edges = edges[test_edge_idx]  # numpy array
+        val_edges = edges[val_edge_idx]  # numpy array
+        train_edges = edges[train_edge_idx]  # numpy array
+
+        test_edges_false = []
+        val_edges_false = []
+        false_edges_dic = {}
+        while len(test_edges_false) < num_test or len(val_edges_false) < num_val:
+            i = np.random.randint(0, adj.shape[0])
+            j = np.random.randint(0, adj.shape[0])
+            if (i, j) in edges_dic:
+                continue
+            if (j, i) in edges_dic:
+                continue
+            if (i, j) in false_edges_dic:
+                continue
+            if (j, i) in false_edges_dic:
+                continue
+            else:
+                false_edges_dic[(i, j)] = 1
+                false_edges_dic[(j, i)] = 1
+
+            if np.random.random_sample() > 0.333:
+                if len(test_edges_false) < num_test:
+                    test_edges_false.append([i, j])
+                else:
+                    if len(val_edges_false) < num_val:
+                        val_edges_false.append([i, j])
+            else:
+                if len(val_edges_false) < num_val:
+                    val_edges_false.append([i, j])
+                else:
+                    if len(test_edges_false) < num_test:
+                        test_edges_false.append([i, j])
+
+        val_edges_false = np.asarray(val_edges_false)
+        test_edges_false = np.asarray(test_edges_false)
+        data = np.ones(train_edges.shape[0], dtype=adj.dtype)
+        adj_train = sp.csr_matrix((data, (train_edges[:, 0], train_edges[:, 1])), shape=adj.shape)
+        adj_train = adj_train + adj_train.T
+
+        # build train graph
+        graph = defaultdict(list)
+        row, col = adj_train.nonzero()
+        for (i, j) in zip(row, col):
+            graph[i].append(j)
+
+        return adj_train, train_edges, val_edges, val_edges_false, test_edges, test_edges_false, graph
+
+
     def mask_test_edges(self, adj, p_val=0.05, p_test=0.1):
         # Function to build test set with 10% positive links
 
+        print("============================== mask test edges =======================")
+        
         # Remove diagonal elements
         adj = adj - sp.dia_matrix((adj.diagonal()[np.newaxis, :], [0]), shape=adj.shape)
         adj.eliminate_zeros()
@@ -873,7 +960,7 @@ class LinkGraph(object):
         num_test = int(np.floor(edges.shape[0] * p_test))
         num_val = int(np.floor(edges.shape[0] * p_val))
 
-        all_edge_idx = range(edges.shape[0])
+        all_edge_idx = list(range(edges.shape[0]))
         np.random.shuffle(all_edge_idx)
         val_edge_idx = all_edge_idx[:num_val]
         test_edge_idx = all_edge_idx[num_val:(num_val + num_test)]
@@ -927,8 +1014,13 @@ class LinkGraph(object):
         assert ~ismember(test_edges, train_edges)
         assert ~ismember(val_edges, test_edges)
 
-        data = np.ones(train_edges.shape[0])
+        train_edges = np.asarray(train_edges)
+        val_edges = np.asarray(val_edges)
+        val_edges_false = np.asarray(val_edges_false)
+        test_edges = np.asarray(test_edges)
+        test_edges_false = np.asarray(test_edges_false)
 
+        data = np.ones(train_edges.shape[0])
         # Re-build adj matrix
         adj_train = sp.csr_matrix((data, (train_edges[:, 0], train_edges[:, 1])), shape=adj.shape)
         adj_train = adj_train + adj_train.T
