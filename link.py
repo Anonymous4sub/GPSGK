@@ -41,9 +41,9 @@ flags.DEFINE_integer("steps", 2000, "steps of optimization")
 flags.DEFINE_integer("pretrain_step", 200, " ") # cora: 100; citeseer:100; pubmed:100; photo:500; computers:500
 flags.DEFINE_float("dropout", 0.3, "")  
 flags.DEFINE_float("weight_decay", 5e-4, "")
-flags.DEFINE_float("lr", 0.001, "learning rate") # cora: 0.0005; citeseer:0.0005; pubmed:0.0005; photo:0.001; computers:0.001
+flags.DEFINE_float("lr", 0.0005, "learning rate") # cora: 0.0005; citeseer:0.0005; pubmed:0.0005; photo:0.001; computers:0.001
 
-flags.DEFINE_string("exp_name", "default_experiment", "experiment name")
+flags.DEFINE_string("exp_name", "default_experiment_link", "experiment name")
 flags.DEFINE_bool("classification", False, "whether to train with the learned representation")
 
 
@@ -311,6 +311,8 @@ if __name__ == "__main__":
         'pos2': tf.placeholder(dtype=tf.int32, shape=[None]),
         'neg1': tf.placeholder(dtype=tf.int32, shape=[None]),
         'neg2': tf.placeholder(dtype=tf.int32, shape=[None]),
+        #'neg21': tf.placeholder(dtype=tf.int32, shape=[None]),
+        #'neg22': tf.placeholder(dtype=tf.int32, shape=[None]),
         "batch_size": tf.placeholder(tf.int32, name='batch_size')
     }
 
@@ -350,7 +352,8 @@ if __name__ == "__main__":
 
         # acc_val = evaluate(graph, placeholders, model, sess)
         auc_test, ap_test = incremental_evaluate_link(graph, placeholders, model, sess, test=True)
-        acc = classification(graph, placeholders, model, sess)
+        #acc = classification(graph, placeholders, model, sess)
+        acc = 0
 
         auc_test_list.append(auc_test)
         ap_test_list.append(ap_test)

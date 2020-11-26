@@ -169,8 +169,8 @@ class Graph(object):
             print("====================================batch with large size of training data=====================================")
             self.batch_num_label = 0
             self.batch_num_unlabel = 0
-            self.batch_size_label = int(np.round(batch_size * label_ratio))
-            self.batch_size_unlabel = int(np.round(batch_size * (1-label_ratio)))
+            self.batch_size_label = int(np.round(batch_size * 0.5))
+            self.batch_size_unlabel = int(np.round(batch_size * 0.5))
 
 
     def val_batch_feed_dict(self, placeholders, val_batch_size=256, test=False, localSim=True):
@@ -713,8 +713,8 @@ class LinkGraph(object):
         self.n_classes = y_train.shape[1]
 
         # split edges into training, validation and test sets
-        adj_train, train_edges, val_edges, val_edges_false, test_edges, test_edges_false, graph = self.make_train_test_edges(adj)
-        #adj_train, train_edges, val_edges, val_edges_false, test_edges, test_edges_false, graph = self.mask_test_edges(adj)
+        #adj_train, train_edges, val_edges, val_edges_false, test_edges, test_edges_false, graph = self.make_train_test_edges(adj)
+        adj_train, train_edges, val_edges, val_edges_false, test_edges, test_edges_false, graph = self.mask_test_edges(adj)
         
         self.adj = adj_train.toarray()
         self.train_edges = train_edges
@@ -795,17 +795,32 @@ class LinkGraph(object):
         batch_neg1_edges = []
         batch_neg2_edges = []
 
+        #k = 2
         for edge in batch_edges:
-            
+            k = 1
             batch_pos1_edges.append(edge[0])
             batch_pos2_edges.append(edge[1])
+            while k > 0:
+                j = np.random.randint(0, self.n_nodes)
+                while j in self.graph[edge[0]]:
+                    j = np.random.randint(0, self.n_nodes)
+                
+                batch_neg1_edges.append(edge[0])
+                batch_neg2_edges.append(j)
+                k = k - 1
+        
+        """
+        for _ in range(2*len(batch_edges)):
             i = np.random.randint(0, self.n_nodes)
             j = np.random.randint(0, self.n_nodes)
+
             while j in self.graph[i]:
                 i = np.random.randint(0, self.n_nodes)
                 j = np.random.randint(0, self.n_nodes)
+
             batch_neg1_edges.append(i)
             batch_neg2_edges.append(j)
+        """
 
         data = (batch_pos1_edges, batch_pos2_edges, batch_neg1_edges, batch_neg2_edges)
 
@@ -819,8 +834,10 @@ class LinkGraph(object):
         feed_dict = {}
         feed_dict.update({placeholders["pos1"]: batch_pos1_edges})
         feed_dict.update({placeholders["pos2"]: batch_pos2_edges})
-        feed_dict.update({placeholders["neg1"]: batch_neg1_edges})
-        feed_dict.update({placeholders["neg2"]: batch_neg2_edges})
+        feed_dict.update({placeholders["neg1"]: batch_neg1_edges[:len(batch_pos1_edges)]})
+        feed_dict.update({placeholders["neg2"]: batch_neg2_edges[:len(batch_pos2_edges)]})
+        #feed_dict.update({placeholders["neg21"]: batch_neg1_edges[len(batch_pos1_edges):]})
+        #feed_dict.update({placeholders["neg22"]: batch_neg2_edges[len(batch_pos2_edges):]})
         feed_dict.update({placeholders["batch_size"]: len(batch_pos1_edges)})
         
         return feed_dict

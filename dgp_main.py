@@ -141,10 +141,10 @@ def train(graph, placeholders, model, sess, saver, model_path):
 
             acc_test = evaluate(graph, placeholders, model, sess, test=True)
             print("Accuracy_test: {:.5f}".format(acc_test))
-            if acc_test > max_acc_val:
+            if acc_val > max_acc_val:
                 save_path = saver.save(sess, "{}/model_best.ckpt".format(model_path), global_step=i)
                 print("=================successfully save the model at: {}=======================".format(save_path))
-                max_acc_val = acc_test
+                max_acc_val = acc_val
 
             
 

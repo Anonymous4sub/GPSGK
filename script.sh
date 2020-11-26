@@ -31,3 +31,18 @@ python link.py --dataset citeseer --batch_size 256
 python link.py --dataset photo --pretrain_step 500
 python link.py --dataset computers --pretrain_step 500
 python link.py --dataset pubmed --batch_size 2000 --steps 2000 --lambda2 10.0
+
+
+for ((s=100; s<=2000; s+=50));
+do 
+    for i in {1, 2, 3}
+    do 
+        python main.py --dataset photo --n_samples $s --pretrain_step 500 --lr 0.001 --tau 0.5 2>&1 | tee -a out/photo_samples.out;
+    done
+done
+
+for ((s=10; s<=2000; s+=10));
+do 
+    python main.py --dataset cora --n_samples $s 2>&1 | tee -a out/cora_samples.out;
+   
+done

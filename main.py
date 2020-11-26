@@ -12,11 +12,11 @@ import tensorflow as tf
 from Datasets import Graph
 from model import StructAwareGP
 
-"""
-seed = 2020
+
+seed = 123
 np.random.seed(seed)
 tf.set_random_seed(seed)
-"""
+
 
 # Settings
 flags = tf.app.flags
@@ -31,7 +31,7 @@ flags.DEFINE_integer("path_length", 1, "") # 1
 flags.DEFINE_float("path_dropout", 0.2, " ")  # 0.2
 
 flags.DEFINE_integer("feature_dim", 64, "dimension of transformed feature") # cora: 64, citeseer:64; pubmed:64
-flags.DEFINE_integer("n_samples", 780, "number of samples of omega") # cora: 780; citeseer:1000; pubmed:1000; photo:1000; computers:1000
+flags.DEFINE_integer("n_samples", 1000, "number of samples of omega") # cora: 780; citeseer:1000; pubmed:1000; photo:1000; computers:1000
 flags.DEFINE_string("latent_layer_units", "[64, 64]", "") # cora: [64, 64]; citeseer:[64, 64]; pubmed:[64, 64]
 flags.DEFINE_float("lambda1", 0.001, " ")
 flags.DEFINE_float("lambda2", 1e-4, " ")  # cora: 1e-4; citeseer:1e-4; pubmed:1e-4;
@@ -63,7 +63,7 @@ if FLAGS.dataset not in ["cora", "pubmed", "citeseer"]:
 if FLAGS.dataset in ["cora", "pubmed", "citeseer"]:
     if label_ratio is None:
         small = True
-    elif label_ratio<0.05: # CORA的话：0.15
+    elif label_ratio<0.15: # CORA的话：0.15
         small = True
     else:
         small = False
@@ -102,6 +102,8 @@ def log_parameter_settings():
     tf.logging.info("==========Parameter Settings==========")
     tf.logging.info("dataset: {}".format(FLAGS.dataset))
     tf.logging.info("label_ratio: {}".format(label_ratio))
+    tf.logging.info("n_samples: {}".format(FLAGS.n_samples))
+    tf.logging.info("tau: {}".format(FLAGS.tau))
     tf.logging.info("======================================")
 
 
@@ -348,8 +350,8 @@ if __name__ == "__main__":
 
     print("===============================================")
     print(acc_test_list)
-    print("Accuracy_val: {:.5f}".format(np.max(acc_val_list)), end=", ")
-    print("Accuracy_test: {:.5f}".format(np.max(acc_test_list)))
+    print("Accuracy_val: {:.5f}".format(np.mean(np.sort(acc_val_list)[-5:])), end=", ")
+    print("Accuracy_test: {:.5f}".format(np.mean(np.sort(acc_test_list)[-5:])))
     print("===============================================")
 
     if FLAGS.plot:

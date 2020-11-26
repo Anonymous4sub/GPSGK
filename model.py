@@ -72,12 +72,20 @@ class StructAwareGP(object):
                 hidden_layers = NeuralNet(self.input_dim, [self.feature_dim*2, self.feature_dim], self.dropout, self.act)
                 self.feature = hidden_layers(tf.nn.embedding_lookup(self.input_features, self.batch))
                 """
-                # trans_input_features = NeuralNet(self.input_dim, [256])(self.input_features)
+                
                 self.feature = GraphConvolution(self.input_features, node_neighbors, [self.feature_dim*2, self.feature_dim], [25, 20], self.batch_size,
                                                 dropout=self.dropout, act=self.act)(self.batch)
+                
+                """
+                # for GraphSAGE
+                self.feature = GraphConvolution(self.input_features, node_neighbors, [self.feature_dim, self.feature_dim], [25, 10], self.batch_size,
+                                                dropout=self.dropout, act=self.act)(self.batch)
+                """
             else:
                 self.feature_dim = self.input_dim
                 self.feature = Constant(self.input_dim)(tf.nn.embedding_lookup(self.input_features, self.batch))
+            
+            #self.A = glorot([self.feature_dim, self.n_classes])
         
 
         # random Fourier feature
@@ -155,6 +163,7 @@ class StructAwareGP(object):
 
         # self.logits = tf.matmul(output, self.linear_W)
         self.logits = output
+        #self.logits = tf.matmul(self.feature, self.A)
 
         # ============================= construct loss =====================================
 
@@ -233,6 +242,7 @@ class StructAwareGP(object):
         # self.loss = self.reconstruct_loss + self.kl - self.sim + self.l2_loss
         # self.loss = self.reconstruct_loss + self.kl + self.sim + self.l2_loss
         self.loss = self.reconstruct_loss + self.kl + self.l2_loss
+        #self.loss = self.reconstruct_loss + self.l2_loss
         
         # ============================ joint updating ========================================
         
@@ -323,6 +333,8 @@ class StructAwareGP_Unsup(object):
         self.pos2 = placeholders['pos2']
         self.neg1 = placeholders['neg1']
         self.neg2 = placeholders['neg2']
+        #self.neg21 = placeholders['neg21']
+        #self.neg22 = placeholders['neg22']
         self.batch_size = placeholders["batch_size"]
 
         self.input_dim = input_features.shape[1]
@@ -345,7 +357,7 @@ class StructAwareGP_Unsup(object):
             self.feature_layer = GraphConvolution(self.input_features, node_neighbors, [self.feature_dim*2, self.feature_dim], [25, 20], self.batch_size,
                                             dropout=self.dropout, act=self.act)
             """
-            self.feature_layer = GraphConvolution(self.input_features, node_neighbors, [self.feature_dim], [25], self.batch_size,
+            self.feature_layer = GraphConvolution(self.input_features, node_neighbors, [self.feature_dim], [15], self.batch_size,
                                             dropout=self.dropout, act=self.act)
 
             # self.context_weight = glorot([self.output_dim, self.output_dim])
@@ -397,23 +409,28 @@ class StructAwareGP_Unsup(object):
         pos2_embed = self.get_output(self.pos2)
         neg1_embed = self.get_output(self.neg1)
         neg2_embed = self.get_output(self.neg2)
+        #neg21_embed = self.get_output(self.neg21)
+        #neg22_embed = self.get_output(self.neg22)
 
         self.pos_neighbor = tf.reduce_sum(tf.multiply(self.pos1_embed, pos2_embed), axis=1)
         self.neg_neighbor = tf.reduce_sum(tf.multiply(neg1_embed, neg2_embed), axis=1)
+        #self.neg_neighbor2 = tf.reduce_mean(tf.multiply(neg21_embed, neg22_embed), axis=1)
         
         self.sim = -1 * tf.reduce_mean(tf.math.log(1e-6 + tf.nn.sigmoid(self.pos_neighbor))) - \
-                         tf.reduce_mean(tf.math.log(1e-6 + tf.nn.sigmoid(-1 * self.neg_neighbor)))
+                        tf.reduce_mean(tf.math.log(1e-6 + tf.nn.sigmoid(-1 * self.neg_neighbor))) 
+                        #- tf.reduce_mean(tf.math.log(1e-6 + tf.nn.sigmoid(-1 * self.neg_neighbor2)))
         
         """
         pos_label = tf.ones_like(self.pos_neighbor)
         neg_label = tf.zeros_like(self.neg_neighbor)
         logits = tf.concat([self.pos_neighbor, self.neg_neighbor], axis=-1)
         labels = tf.concat([pos_label, neg_label], axis=-1)
-
         self.sim = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=labels, logits=logits))
         """
+
         scale = 1. / (2*tf.cast(self.batch_size, tf.float32))
         self.kl = scale * self.obtain_prior_KL()
+
 
         """
         self.context = tf.matmul(self.output, self.context_weight)
@@ -914,7 +931,6 @@ class SemiRFDGP(object):
 
         scale = 1. / tf.cast(tf.reduce_sum(self.label_mask), tf.float32)
         kl = 0.0 
-
         for layer in self.layers.aggregators:
             kl += layer.obtain_KL_prior()
         self.kl = scale * kl * self.lamb
