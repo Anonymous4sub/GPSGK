@@ -169,8 +169,10 @@ class Graph(object):
             print("====================================batch with large size of training data=====================================")
             self.batch_num_label = 0
             self.batch_num_unlabel = 0
-            self.batch_size_label = int(np.round(batch_size * 0.5))
-            self.batch_size_unlabel = int(np.round(batch_size * 0.5))
+            self.batch_size_label = int(np.round(batch_size * 0.2))
+            self.batch_size_unlabel = int(np.round(batch_size * 0.8))
+            #self.batch_size_label = int(np.round(batch_size * label_ratio))
+            #self.batch_size_unlabel = int(np.round(batch_size * (1-label_ratio)))
 
 
     def val_batch_feed_dict(self, placeholders, val_batch_size=256, test=False, localSim=True):

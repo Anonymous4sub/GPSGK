@@ -3,7 +3,7 @@ import numpy as np
 
 
 ### single out file ###
-file_name = "out/computers.out"
+file_name = "out/cora_tau_lambda1.out"
 
 file_content = open(file_name).readlines()
 
@@ -25,5 +25,10 @@ for idx in idxs:
     metrics.append(np.mean(nums))
 
 # print(metrics)
+"""
 for i in np.arange(0, len(metrics), 3):
     print(metrics[i:i+3])
+"""
+metrics = np.asarray(metrics)
+metrics = metrics.reshape(15, 11)
+print(metrics)

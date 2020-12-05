@@ -86,7 +86,8 @@ def log_parameter_settings():
 def load_data():
 
     # load data
-    graph = Graph(FLAGS.dataset, FLAGS.data_path, label_ratio=label_ratio, max_degree=FLAGS.max_degree, batch_size=FLAGS.batch_size)
+    graph = Graph(FLAGS.dataset, FLAGS.data_path, label_ratio=label_ratio, max_degree=FLAGS.max_degree, 
+                    batch_size=FLAGS.batch_size, small=True)
     tf.logging.info("dataset:{}, num nodes:{}, num features:{}".format(FLAGS.dataset, graph.n_nodes, graph.n_features))
 
     return graph

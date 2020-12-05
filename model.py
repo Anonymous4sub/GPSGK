@@ -264,7 +264,7 @@ class StructAwareGP(object):
                                     for grad, var in grads_and_vars_e]
         self.opt_step_e = self.optimizer_e.apply_gradients(clipped_grads_and_vars_e)
 
-        self.optimizer_m = tf.train.AdamOptimizer(self.lr)
+        self.optimizer_m = tf.train.AdamOptimizer(self.lambda1 * self.lr)
         grads_and_vars_m = self.optimizer_m.compute_gradients(self.loss_m, var_list= fm_vars + kn_vars)
         clipped_grads_and_vars_m = [(tf.clip_by_value(grad, -5.0, 5.0) if grad is not None else None, var) 
                                     for grad, var in grads_and_vars_m]

@@ -13,9 +13,7 @@ from Datasets import Graph
 from model import StructAwareGP
 
 
-seed = 123
-np.random.seed(seed)
-tf.set_random_seed(seed)
+
 
 
 # Settings
@@ -29,11 +27,12 @@ flags.DEFINE_integer("n_hop", 1, "") # Cora: 1
 flags.DEFINE_integer("max_degree", 128, "")
 flags.DEFINE_integer("path_length", 1, "") # 1
 flags.DEFINE_float("path_dropout", 0.2, " ")  # 0.2
+flags.DEFINE_integer("seed", 24, "random seed")
 
 flags.DEFINE_integer("feature_dim", 64, "dimension of transformed feature") # cora: 64, citeseer:64; pubmed:64
 flags.DEFINE_integer("n_samples", 1000, "number of samples of omega") # cora: 780; citeseer:1000; pubmed:1000; photo:1000; computers:1000
 flags.DEFINE_string("latent_layer_units", "[64, 64]", "") # cora: [64, 64]; citeseer:[64, 64]; pubmed:[64, 64]
-flags.DEFINE_float("lambda1", 0.001, " ")
+flags.DEFINE_float("lambda1", 1.0, " ")
 flags.DEFINE_float("lambda2", 1e-4, " ")  # cora: 1e-4; citeseer:1e-4; pubmed:1e-4;
 
 flags.DEFINE_integer("batch_size", 512, "")
@@ -53,6 +52,14 @@ flags.DEFINE_string("exp_name", "default_experiment", "experiment name")
 
 flags.DEFINE_bool("plot", False, "whether to save embeddings")
 #flags.DEFINE_bool("la", True, "whether to use label augmentation")
+"""
+seed = np.random.randint(10000)
+if FLAGS.dataset == "cora":
+"""
+# seed = 24 # 24
+# photo: 3232
+np.random.seed(FLAGS.seed)
+tf.set_random_seed(FLAGS.seed)
 
 
 # parameter config
@@ -101,9 +108,11 @@ tf.logging.set_verbosity(tf.logging.INFO)
 def log_parameter_settings():
     tf.logging.info("==========Parameter Settings==========")
     tf.logging.info("dataset: {}".format(FLAGS.dataset))
+    tf.logging.info("random seed: {}".format(FLAGS.seed))
     tf.logging.info("label_ratio: {}".format(label_ratio))
     tf.logging.info("n_samples: {}".format(FLAGS.n_samples))
     tf.logging.info("tau: {}".format(FLAGS.tau))
+    tf.logging.info("lambda1: {}".format(FLAGS.lambda1))
     tf.logging.info("======================================")
 
 
@@ -176,6 +185,7 @@ def pretrain(graph, placeholders, model, sess):
 
     for i in range(FLAGS.pretrain_step):
         train_feed_dict = batch_dict(placeholders)
+        train_feed_dict.update({placeholders["dropout"]: FLAGS.dropout})
         _, loss_e, acc_train = sess.run([model.opt_step_e, model.loss_e, model.accuracy], feed_dict=train_feed_dict)
         print("pretrain step {}: loss_e: {:.6f}, accuracy: {:.5f}".format(i, loss_e, acc_train))
 
@@ -197,17 +207,18 @@ def train_iterative(graph, placeholders, model, sess, saver, model_path):
     for i in range(FLAGS.steps):
         
         train_feed_dict = batch_dict(placeholders)
+        train_feed_dict.update({placeholders["dropout"]: FLAGS.dropout})
     
         sess.run(model.opt_step_e, feed_dict = train_feed_dict)
         
         #if FLAGS.la:
-        
+        """
         # print("+++++++++++++++++++++++++++ LA ++++++++++++++++++++++++++++++++")
         logits = sess.run(model.logits, feed_dict=train_feed_dict)
         psudo_label, mask = get_psudo_label(logits, train_feed_dict[placeholders["Y"]], train_feed_dict[placeholders["label_mask"]], FLAGS.tau)
         train_feed_dict[placeholders["Y"]] = psudo_label
         train_feed_dict[placeholders["label_mask"]] = mask
-        
+        """
         sess.run(model.opt_step_m, feed_dict = train_feed_dict)
 
         """
@@ -302,7 +313,7 @@ if __name__ == "__main__":
         'Y': tf.placeholder(dtype=tf.float32, shape=[None, graph.n_classes]),
         'label_mask': tf.placeholder(dtype=tf.int32, shape=[None]),
         'localSim': tf.placeholder(dtype=tf.float32, shape=[None, None]), 
-        #'globalSim': tf.placeholder(dtype=tf.float32, shape=[None, None]),
+        'dropout': tf.placeholder_with_default(0.0, shape=()),
         "batch_size": tf.placeholder(tf.int32, name='batch_size')
     }
     
@@ -311,7 +322,7 @@ if __name__ == "__main__":
 
     model = StructAwareGP(placeholders, graph.feature, FLAGS.feature_dim, FLAGS.n_samples, latent_layer_units, output_dim, 
                         transform_feature=transform, node_neighbors=graph.node_neighbors, linear_layer=linear_layer, 
-                        lambda1=FLAGS.lambda1, lambda2 = FLAGS.lambda2, dropout=FLAGS.dropout, bias=True, 
+                        lambda1=FLAGS.lambda1, lambda2 = FLAGS.lambda2, dropout=placeholders["dropout"], bias=True, 
                         act=tf.nn.relu, weight_decay=FLAGS.weight_decay, lr=FLAGS.lr)
     print("successfully initialized the model")
 
@@ -351,7 +362,8 @@ if __name__ == "__main__":
     print("===============================================")
     print(acc_test_list)
     print("Accuracy_val: {:.5f}".format(np.mean(np.sort(acc_val_list)[-5:])), end=", ")
-    print("Accuracy_test: {:.5f}".format(np.mean(np.sort(acc_test_list)[-5:])))
+    #print("Accuracy_test: {:.5f}".format(np.mean(np.sort(acc_test_list)[-5:])))
+    print("Accuracy_test: {:.5f}".format(np.mean(acc_test_list)))
     print("===============================================")
 
     if FLAGS.plot:
