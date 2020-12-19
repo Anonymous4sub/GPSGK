@@ -4,6 +4,7 @@ for i in $(seq 1 15)
 do
     python main.py --dataset cora 2>&1 | tee -a out/cora.out; 
     python main.py --dataset cora --seed 24 --lambda1 3 --tau 0.7; # 0.839
+    python main.py --dataset cora --seed 24 --lambda1 3 --tau 0.8; # 0.843
 
 done
 
@@ -11,24 +12,29 @@ for i in $(seq 1 15)
 do
     python main.py --dataset citeseer --n_samples 1000 --pretrain_step 100 --lr 0.0005 --tau 0.6 2>&1 | tee -a out/citeseer.out;
     python main.py --dataset citeseer --seed 0 --lambda1 2 --tau 0.5; # 0.7287
+    python main.py --dataset citeseer --seed 0 --lambda1 2 --tau 0.8; # 0.729
+    
 done
 
 for i in $(seq 1 15)
 do
     python main.py --dataset pubmed --n_samples 1000 --pretrain_step 100 --lr 0.0005 --tau 0.9 2>&1 | tee -a out/pubmed.out;
     python main.py --dataset pubmed --seed 512 --lambda1 1 --tau 0.9; # 0.801
+    python main.py --dataset pubmed --seed 512 --lambda1 5 --tau 0.9; # 0.806
 done
 
 for i in $(seq 1 15)
 do
     python main.py --dataset photo --n_samples 1000 --pretrain_step 500 --lr 0.001 --tau 0.5 2>&1 | tee -a out/photo.out; 
     python main.py --dataset photo --seed 24 --pretrain_step 500 --lr 0.0005 --lambda1 10 --tau 0.7;  # 0.927
+    python main.py --dataset photo --seed 24 --pretrain_step 500 --lambda1 4 --tau 0.7; # 0.929
 done
 
 for i in $(seq 1 15)
 do
     python main.py --dataset computers --n_samples 1000 --pretrain_step 500 --lr 0.001 --tau 0.5 2>&1 | tee -a out/computers.out;
     python main.py --dataset photo --seed 24 --pretrain_step 500 --lr 0.0005 --lambda1 10 --tau 0.7; # 0.85509
+    python main.py --dataset computers --seed 24 --pretrain_step 500 --lambda1 3 --tau 0.9; #0.876
 done
 
 # for link prediction

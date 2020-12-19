@@ -32,7 +32,7 @@ flags.DEFINE_integer("seed", 24, "random seed")
 flags.DEFINE_integer("feature_dim", 64, "dimension of transformed feature") # cora: 64, citeseer:64; pubmed:64
 flags.DEFINE_integer("n_samples", 1000, "number of samples of omega") # cora: 780; citeseer:1000; pubmed:1000; photo:1000; computers:1000
 flags.DEFINE_string("latent_layer_units", "[64, 64]", "") # cora: [64, 64]; citeseer:[64, 64]; pubmed:[64, 64]
-flags.DEFINE_float("lambda1", 1.0, " ")
+flags.DEFINE_float("lambda1", 3.0, " ")
 flags.DEFINE_float("lambda2", 1e-4, " ")  # cora: 1e-4; citeseer:1e-4; pubmed:1e-4;
 
 flags.DEFINE_integer("batch_size", 512, "")
@@ -42,7 +42,7 @@ flags.DEFINE_integer("pretrain_step", 100, " ") # cora: 100; citeseer:100; pubme
 flags.DEFINE_float("dropout", 0.5, "")  
 flags.DEFINE_float("weight_decay", 5e-4, "")
 flags.DEFINE_float("lr", 0.0005, "learning rate") # cora: 0.0005; citeseer:0.0005; pubmed:0.0005; photo:0.001; computers:0.001
-flags.DEFINE_float("tau", 0.5, "") # cora: 0.5; citeseer:0.6, pubmed:0.9; photo:0.5; computers:0.5
+flags.DEFINE_float("tau", 0.8, "") # cora: 0.5; citeseer:0.6, pubmed:0.9; photo:0.5; computers:0.5
 
 flags.DEFINE_integer("early_stopping", 20, " ")
 flags.DEFINE_string("transform", "True", "")
@@ -212,13 +212,13 @@ def train_iterative(graph, placeholders, model, sess, saver, model_path):
         sess.run(model.opt_step_e, feed_dict = train_feed_dict)
         
         #if FLAGS.la:
-        """
+        
         # print("+++++++++++++++++++++++++++ LA ++++++++++++++++++++++++++++++++")
         logits = sess.run(model.logits, feed_dict=train_feed_dict)
         psudo_label, mask = get_psudo_label(logits, train_feed_dict[placeholders["Y"]], train_feed_dict[placeholders["label_mask"]], FLAGS.tau)
         train_feed_dict[placeholders["Y"]] = psudo_label
         train_feed_dict[placeholders["label_mask"]] = mask
-        """
+        
         sess.run(model.opt_step_m, feed_dict = train_feed_dict)
 
         """
