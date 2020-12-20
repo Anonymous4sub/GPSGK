@@ -187,7 +187,7 @@ def pretrain(graph, placeholders, model, sess):
         train_feed_dict = batch_dict(placeholders)
         train_feed_dict.update({placeholders["dropout"]: FLAGS.dropout})
         _, loss_e, acc_train = sess.run([model.opt_step_e, model.loss_e, model.accuracy], feed_dict=train_feed_dict)
-        print("pretrain step {}: loss_e: {:.6f}, accuracy: {:.5f}".format(i, loss_e, acc_train))
+        #print("pretrain step {}: loss_e: {:.6f}, accuracy: {:.5f}".format(i, loss_e, acc_train))
 
 
 def train_iterative(graph, placeholders, model, sess, saver, model_path):
@@ -231,8 +231,8 @@ def train_iterative(graph, placeholders, model, sess, saver, model_path):
             sim = 0.0
             loss_train, re_loss, kl, acc_train_value = sess.run([model.loss, model.reconstruct_loss, model.kl, model.accuracy], feed_dict=train_feed_dict)
 
-            print("Epoch {}: ".format(i+1), "loss: {:.5f}, ".format(loss_train), "llh_loss: {:.5f}, ".format(re_loss),
-              "kl: {:.5f}, ".format(kl), "sim: {:.5f}, ".format(sim), "Accuracy: {:.5f}".format(acc_train_value), end=", ")
+            #print("Epoch {}: ".format(i+1), "loss: {:.5f}, ".format(loss_train), "llh_loss: {:.5f}, ".format(re_loss),
+            #  "kl: {:.5f}, ".format(kl), "sim: {:.5f}, ".format(sim), "Accuracy: {:.5f}".format(acc_train_value), end=", ")
 
             """
             feed_dict_val = graph.val_batch_feed_dict(placeholders, FLAGS.val_batch_size)
@@ -244,7 +244,7 @@ def train_iterative(graph, placeholders, model, sess, saver, model_path):
             # print(acc_val)
             """
             loss_val, llh_loss_val, acc_val = evaluate(graph, placeholders, model, sess)
-            print("Accuracy_val: {:.5f}".format(acc_val), end=", ")
+            #print("Accuracy_val: {:.5f}".format(acc_val), end=", ")
 
             """
             feed_dict_test = graph.val_batch_feed_dict(placeholders, FLAGS.val_batch_size, test=True)
@@ -256,7 +256,7 @@ def train_iterative(graph, placeholders, model, sess, saver, model_path):
             # print(acc_test)
             """
             loss_test, llh_loss_test, acc_test = evaluate(graph, placeholders, model, sess, test=True)
-            print("loss_test: {:.5f}, llh_loss_test: {:.5f}, Accuracy_test: {:.5f}".format(loss_test, llh_loss_test, acc_test))
+            #print("loss_test: {:.5f}, llh_loss_test: {:.5f}, Accuracy_test: {:.5f}".format(loss_test, llh_loss_test, acc_test))
             if acc_val > max_acc_val:
                 save_path = saver.save(sess, "{}/model_best.ckpt".format(model_path), global_step=i)
                 print("=================successfully save the model at: {}=======================".format(save_path))

@@ -33,7 +33,7 @@ done
 for i in $(seq 1 15)
 do
     python main.py --dataset computers --n_samples 1000 --pretrain_step 500 --lr 0.001 --tau 0.5 2>&1 | tee -a out/computers.out;
-    python main.py --dataset photo --seed 24 --pretrain_step 500 --lr 0.0005 --lambda1 10 --tau 0.7; # 0.85509
+    python main.py --dataset computers --seed 24 --pretrain_step 500 --lr 0.0005 --lambda1 10 --tau 0.7; # 0.85509
     python main.py --dataset computers --seed 24 --pretrain_step 500 --lambda1 3 --tau 0.9; #0.876
 done
 
