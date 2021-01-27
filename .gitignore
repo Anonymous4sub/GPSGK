@@ -11,3 +11,4 @@ data/
 .idea/
 nohup.out
 *.out
+*.sh

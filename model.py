@@ -2,7 +2,7 @@
 import tensorflow as tf
 import numpy as np
 
-from layers import glorot, Layer, NeuralNet, InferenceNet, GCNAggregator, RFFAggregator, Res_bolck
+from layers import glorot, Layer, NeuralNet, InferenceNet, GCNAggregator, RFFAggregator, Res_bolck, Constant
 
 
 
@@ -77,13 +77,21 @@ class StructAwareGP(object):
                                                 dropout=self.dropout, act=self.act)(self.batch)
                 
                 """
+                self.feature = GraphConvolution(self.input_features, node_neighbors, [self.feature_dim,self.feature_dim,self.feature_dim], 
+                                                [15, 10, 10], self.batch_size, dropout=self.dropout, act=self.act)(self.batch)
+                """
+                """
                 # for GraphSAGE
                 self.feature = GraphConvolution(self.input_features, node_neighbors, [self.feature_dim, self.feature_dim], [25, 10], self.batch_size,
                                                 dropout=self.dropout, act=self.act)(self.batch)
                 """
             else:
-                self.feature_dim = self.input_dim
-                self.feature = Constant(self.input_dim)(tf.nn.embedding_lookup(self.input_features, self.batch))
+                # self.feature_dim = self.input_dim
+                #self.feature = Constant(self.input_dim)(tf.nn.embedding_lookup(self.input_features, self.batch))
+
+                self.feature_dim = feature_dim
+                feature_net = NeuralNet(self.input_dim, [self.feature_dim, self.feature_dim], dropout=self.dropout)
+                self.feature = tf.nn.embedding_lookup(feature_net(self.input_features), self.batch)
             
             #self.A = glorot([self.feature_dim, self.n_classes])
         
@@ -133,7 +141,9 @@ class StructAwareGP(object):
         Omega = Omega_mu + self.eps * tf.math.exp(Omega_logstd)  # sample_size, n_samples, feature_dim
         self.Omega = tf.reduce_mean(Omega, axis=0)
         # self.Omega = Omega
-
+        """
+        self.Omega = np.random.normal(0.0, 1.0, [self.n_samples, self.feature_dim]).astype(np.float32)
+        """
         transform = tf.matmul(self.feature, self.Omega, transpose_b=True) # N, n_samples
         transform = np.sqrt(2. / self.n_samples) * tf.math.cos(2*np.pi*transform + self.b)
         self.kernelfeatures = tf.cast(transform, tf.float32)
